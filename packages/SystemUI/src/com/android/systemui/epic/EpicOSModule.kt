@@ -37,6 +37,7 @@ import com.android.systemui.qs.tiles.UsbTetherTile
 import com.android.systemui.qs.tiles.VpnTile
 import com.android.systemui.qs.tiles.VolumeTile
 import com.android.systemui.qs.tiles.WifiTile
+import com.android.systemui.qs.tiles.ReadingModeTile
 import com.android.systemui.qs.tiles.RefreshRateTile
 
 import dagger.Binds
@@ -112,6 +113,12 @@ interface EpicOSModule {
     @IntoMap
     @StringKey(PreferredNetworkTile.TILE_SPEC)
     fun bindPreferredNetworkTile(preferredNetworkTile: PreferredNetworkTile): QSTileImpl<*>
+
+    /** Inject ReadingModeTile into tileMap in QSModule */
+    @Binds
+    @IntoMap
+    @StringKey(ReadingModeTile.TILE_SPEC)
+    fun bindReadingModeTile(readingModeTile: ReadingModeTile): QSTileImpl<*>
 
     /** Inject ScreenshotTile into tileMap in QSModule */
     @Binds
