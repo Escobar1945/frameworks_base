@@ -12,4 +12,7 @@
     <!-- Settings Restart -->
     <java-symbol type="string" name="settings_restart_title" />
     <java-symbol type="string" name="settings_restart_message" />
+	
+	<!-- For dynamic default font styles -->
+    <java-symbol type="string" name="config_bodyFontFamily" />
 </resources>
