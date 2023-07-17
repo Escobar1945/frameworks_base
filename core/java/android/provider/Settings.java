@@ -6052,6 +6052,12 @@ public final class Settings {
          *  @hide
          */
         public static final String SCREEN_FLASH_NOTIFICATION = "screen_flash_notification";
+		
+		/**
+         * Settings Dashboard Style
+         * @hide
+         */
+        public static final String SETTINGS_DASHBOARD_STYLE = "settings_dashboard_style";
 
         /**
          * Integer property that specifes the color for screen flash notification as a
