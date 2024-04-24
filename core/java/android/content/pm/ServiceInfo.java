@@ -31,6 +31,7 @@ import java.lang.annotation.RetentionPolicy;
  * service. This corresponds to information collected from the
  * AndroidManifest.xml's &lt;service&gt; tags.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class ServiceInfo extends ComponentInfo
         implements Parcelable {
     /**
@@ -132,11 +133,6 @@ public class ServiceInfo extends ComponentInfo
      * the {@link android.R.attr#foregroundServiceType} attribute.
      * Data(photo, file, account) upload/download, backup/restore, import/export, fetch,
      * transfer over network between device and cloud.
-     *
-     * <p class="note">
-     * Use the {@link android.app.job.JobInfo.Builder#setDataTransfer} API for data transfers
-     * that can be deferred until conditions are ideal for the app or device.
-     * </p>
      */
     @RequiresPermission(
             value = Manifest.permission.FOREGROUND_SERVICE_DATA_SYNC,
@@ -486,7 +482,7 @@ public class ServiceInfo extends ComponentInfo
      * Here is an example:
      * <pre>
      *  &lt;uses-permission
-     *      android:name="android.permissions.FOREGROUND_SERVICE_SPECIAL_USE"
+     *      android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
      *  /&gt;
      *  &lt;service
      *      android:name=".MySpecialForegroundService"
@@ -506,7 +502,7 @@ public class ServiceInfo extends ComponentInfo
      * in both platforms.
      * <pre>
      *  &lt;uses-permission
-     *      android:name="android.permissions.FOREGROUND_SERVICE_SPECIAL_USE"
+     *      android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
      *      android:maxSdkVersion="last_sdk_version_without_type_foo"
      *  /&gt;
      *  &lt;service

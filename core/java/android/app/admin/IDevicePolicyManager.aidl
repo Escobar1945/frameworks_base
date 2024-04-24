@@ -54,6 +54,7 @@ import android.security.keystore.ParcelableKeyGenParameterSpec;
 import android.telephony.data.ApnSetting;
 import com.android.internal.infra.AndroidFuture;
 import android.app.admin.DevicePolicyState;
+import android.app.admin.EnforcingAdmin;
 
 import java.util.List;
 
@@ -178,6 +179,7 @@ interface IDevicePolicyManager {
 
     boolean setDeviceOwner(in ComponentName who, int userId, boolean setProfileOwnerOnCurrentUserIfNecessary);
     ComponentName getDeviceOwnerComponent(boolean callingUserOnly);
+    ComponentName getDeviceOwnerComponentOnUser(int userId);
     boolean hasDeviceOwner();
     String getDeviceOwnerName();
     void clearDeviceOwner(String packageName);
@@ -274,6 +276,7 @@ interface IDevicePolicyManager {
 
     Intent createAdminSupportIntent(in String restriction);
     Bundle getEnforcingAdminAndUserDetails(int userId,String restriction);
+    List<EnforcingAdmin> getEnforcingAdminsForRestriction(int userId,String restriction);
     boolean setApplicationHidden(in ComponentName admin, in String callerPackage, in String packageName, boolean hidden, boolean parent);
     boolean isApplicationHidden(in ComponentName admin, in String callerPackage, in String packageName, boolean parent);
 
@@ -344,7 +347,7 @@ interface IDevicePolicyManager {
     boolean hasManagedProfileCallerIdAccess(int userId, String packageName);
 
     void setCredentialManagerPolicy(in PackagePolicy policy);
-    PackagePolicy getCredentialManagerPolicy();
+    PackagePolicy getCredentialManagerPolicy(int userId);
 
     void setManagedProfileContactsAccessPolicy(in PackagePolicy policy);
     PackagePolicy getManagedProfileContactsAccessPolicy();
@@ -565,7 +568,6 @@ interface IDevicePolicyManager {
 
     void setUsbDataSignalingEnabled(String callerPackage, boolean enabled);
     boolean isUsbDataSignalingEnabled(String callerPackage);
-    boolean isUsbDataSignalingEnabledForUser(int userId);
     boolean canUsbDataSignalingBeDisabled();
 
     void setMinimumRequiredWifiSecurityLevel(String callerPackageName, int level);
@@ -601,8 +603,6 @@ interface IDevicePolicyManager {
     ManagedSubscriptionsPolicy getManagedSubscriptionsPolicy();
 
     DevicePolicyState getDevicePolicyState();
-
-    void setOverrideKeepProfilesRunning(boolean enabled);
 
     boolean triggerDevicePolicyEngineMigration(boolean forceMigration);
 

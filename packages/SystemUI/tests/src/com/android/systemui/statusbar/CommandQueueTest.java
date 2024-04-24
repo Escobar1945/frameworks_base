@@ -503,10 +503,10 @@ public class CommandQueueTest extends SysuiTestCase {
     }
 
     @Test
-    public void testRequestWindowMagnificationConnection() {
-        mCommandQueue.requestWindowMagnificationConnection(true);
+    public void testRequestMagnificationConnection() {
+        mCommandQueue.requestMagnificationConnection(true);
         waitForIdleSync();
-        verify(mCallbacks).requestWindowMagnificationConnection(true);
+        verify(mCallbacks).requestMagnificationConnection(true);
     }
 
     @Test
@@ -514,6 +514,21 @@ public class CommandQueueTest extends SysuiTestCase {
         mCommandQueue.setNavigationBarLumaSamplingEnabled(1, true);
         waitForIdleSync();
         verify(mCallbacks).setNavigationBarLumaSamplingEnabled(eq(1), eq(true));
+    }
+
+    @Test
+    public void testConfirmImmersivePrompt() {
+        mCommandQueue.confirmImmersivePrompt();
+        waitForIdleSync();
+        verify(mCallbacks).confirmImmersivePrompt();
+    }
+
+    @Test
+    public void testImmersiveModeChanged() {
+        final int displayAreaId = 10;
+        mCommandQueue.immersiveModeChanged(displayAreaId, true);
+        waitForIdleSync();
+        verify(mCallbacks).immersiveModeChanged(displayAreaId, true);
     }
 
     @Test

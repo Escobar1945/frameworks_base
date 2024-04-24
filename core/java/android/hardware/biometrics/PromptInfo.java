@@ -48,6 +48,7 @@ public class PromptInfo implements Parcelable {
     private boolean mAllowBackgroundAuthentication;
     private boolean mIgnoreEnrollmentState;
     private boolean mIsForLegacyFingerprintManager = false;
+    private boolean mShowEmergencyCallButton = false;
 
     public PromptInfo() {
 
@@ -72,6 +73,7 @@ public class PromptInfo implements Parcelable {
         mAllowBackgroundAuthentication = in.readBoolean();
         mIgnoreEnrollmentState = in.readBoolean();
         mIsForLegacyFingerprintManager = in.readBoolean();
+        mShowEmergencyCallButton = in.readBoolean();
     }
 
     public static final Creator<PromptInfo> CREATOR = new Creator<PromptInfo>() {
@@ -111,8 +113,10 @@ public class PromptInfo implements Parcelable {
         dest.writeBoolean(mAllowBackgroundAuthentication);
         dest.writeBoolean(mIgnoreEnrollmentState);
         dest.writeBoolean(mIsForLegacyFingerprintManager);
+        dest.writeBoolean(mShowEmergencyCallButton);
     }
 
+    // LINT.IfChange
     public boolean containsTestConfigurations() {
         if (mIsForLegacyFingerprintManager
                 && mAllowedSensorIds.size() == 1
@@ -121,6 +125,10 @@ public class PromptInfo implements Parcelable {
         } else if (!mAllowedSensorIds.isEmpty()) {
             return true;
         } else if (mAllowBackgroundAuthentication) {
+            return true;
+        } else if (mIsForLegacyFingerprintManager) {
+            return true;
+        } else if (mIgnoreEnrollmentState) {
             return true;
         }
         return false;
@@ -144,6 +152,7 @@ public class PromptInfo implements Parcelable {
         }
         return false;
     }
+    // LINT.ThenChange(frameworks/base/core/java/android/hardware/biometrics/BiometricPrompt.java)
 
     // Setters
 
@@ -220,6 +229,10 @@ public class PromptInfo implements Parcelable {
         mIsForLegacyFingerprintManager = true;
         mAllowedSensorIds.clear();
         mAllowedSensorIds.add(sensorId);
+    }
+
+    public void setShowEmergencyCallButton(boolean showEmergencyCallButton) {
+        mShowEmergencyCallButton = showEmergencyCallButton;
     }
 
     // Getters
@@ -302,5 +315,9 @@ public class PromptInfo implements Parcelable {
 
     public boolean isForLegacyFingerprintManager() {
         return mIsForLegacyFingerprintManager;
+    }
+
+    public boolean isShowEmergencyCallButton() {
+        return mShowEmergencyCallButton;
     }
 }

@@ -26,12 +26,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ShortcutInfo;
 import android.media.AudioAttributes;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.provider.Settings;
 import android.service.notification.NotificationListenerService;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.util.Preconditions;
@@ -54,6 +56,7 @@ import java.util.Objects;
  * A representation of settings that apply to a collection of similarly themed notifications.
  */
 public final class NotificationChannel implements Parcelable {
+    private static final String TAG = "NotificationChannel";
 
     /**
      * The id of the default channel for an app. This id is reserved by the system. All
@@ -269,6 +272,10 @@ public final class NotificationChannel implements Parcelable {
     private boolean mDemoted = false;
     private boolean mImportantConvo = false;
     private long mDeletedTime = DEFAULT_DELETION_TIME_MS;
+    /** Do not (de)serialize this value: it only affects logic in system_server and that logic
+     * is reset on each boot {@link NotificationAttentionHelper#buzzBeepBlinkLocked}.
+     */
+    private long mLastNotificationUpdateTimeMs = 0;
 
     /**
      * Creates a notification channel.
@@ -929,6 +936,23 @@ public final class NotificationChannel implements Parcelable {
     }
 
     /**
+     * Returns the time of the notification post or last update for this channel.
+     * @return time of post / last update
+     * @hide
+     */
+    public long getLastNotificationUpdateTimeMs() {
+        return mLastNotificationUpdateTimeMs;
+    }
+
+    /**
+     * Sets the time of the notification post or last update for this channel.
+     * @hide
+     */
+    public void setLastNotificationUpdateTimeMs(long updateTimeMs) {
+        mLastNotificationUpdateTimeMs = updateTimeMs;
+    }
+
+    /**
      * @hide
      */
     public void populateFromXmlForRestore(XmlPullParser parser, boolean pkgInstalled,
@@ -959,8 +983,11 @@ public final class NotificationChannel implements Parcelable {
         setLockscreenVisibility(safeInt(parser, ATT_VISIBILITY, DEFAULT_VISIBILITY));
 
         Uri sound = safeUri(parser, ATT_SOUND);
-        setSound(forRestore ? restoreSoundUri(context, sound, pkgInstalled) : sound,
-                safeAudioAttributes(parser));
+
+        final AudioAttributes audioAttributes = safeAudioAttributes(parser);
+        final int usage = audioAttributes.getUsage();
+        setSound(forRestore ? restoreSoundUri(context, sound, pkgInstalled, usage) : sound,
+                audioAttributes);
 
         enableLights(safeBool(parser, ATT_LIGHTS, false));
         setLightColor(safeInt(parser, ATT_LIGHT_COLOR, DEFAULT_LIGHT_COLOR));
@@ -1010,18 +1037,34 @@ public final class NotificationChannel implements Parcelable {
         if (ContentResolver.SCHEME_FILE.equals(uri.getScheme())) {
             return uri;
         }
-
         return contentResolver.canonicalize(uri);
     }
 
     @Nullable
-    private Uri getUncanonicalizedSoundUri(ContentResolver contentResolver, @NonNull Uri uri) {
+    private Uri getUncanonicalizedSoundUri(
+            ContentResolver contentResolver, @NonNull Uri uri, int usage) {
         if (Settings.System.DEFAULT_NOTIFICATION_URI.equals(uri)
                 || ContentResolver.SCHEME_ANDROID_RESOURCE.equals(uri.getScheme())
                 || ContentResolver.SCHEME_FILE.equals(uri.getScheme())) {
             return uri;
         }
-        return contentResolver.uncanonicalize(uri);
+        int ringtoneType = 0;
+
+        // Consistent with UI(SoundPreferenceController.handlePreferenceTreeClick).
+        if (AudioAttributes.USAGE_ALARM == usage) {
+            ringtoneType = RingtoneManager.TYPE_ALARM;
+        } else if (AudioAttributes.USAGE_NOTIFICATION_RINGTONE == usage) {
+            ringtoneType = RingtoneManager.TYPE_RINGTONE;
+        } else {
+            ringtoneType = RingtoneManager.TYPE_NOTIFICATION;
+        }
+        try {
+            return RingtoneManager.getRingtoneUriForRestore(
+                    contentResolver, uri.toString(), ringtoneType);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to uncanonicalized sound uri for " + uri + " " + e);
+            return Settings.System.DEFAULT_NOTIFICATION_URI;
+        }
     }
 
     /**
@@ -1033,7 +1076,8 @@ public final class NotificationChannel implements Parcelable {
      * @hide
      */
     @Nullable
-    public Uri restoreSoundUri(Context context, @Nullable Uri uri, boolean pkgInstalled) {
+    public Uri restoreSoundUri(
+            Context context, @Nullable Uri uri, boolean pkgInstalled, int usage) {
         if (uri == null || Uri.EMPTY.equals(uri)) {
             return null;
         }
@@ -1060,7 +1104,7 @@ public final class NotificationChannel implements Parcelable {
             }
         }
         mSoundRestored = true;
-        return getUncanonicalizedSoundUri(contentResolver, canonicalizedUri);
+        return getUncanonicalizedSoundUri(contentResolver, canonicalizedUri, usage);
     }
 
     /**
@@ -1385,7 +1429,8 @@ public final class NotificationChannel implements Parcelable {
                 + ", mParent=" + mParentId
                 + ", mConversationId=" + mConversationId
                 + ", mDemoted=" + mDemoted
-                + ", mImportantConvo=" + mImportantConvo;
+                + ", mImportantConvo=" + mImportantConvo
+                + ", mLastNotificationUpdateTimeMs=" + mLastNotificationUpdateTimeMs;
     }
 
     /** @hide */

@@ -158,7 +158,11 @@ public abstract class DisplayEventReceiver {
         static final int FRAME_TIMELINES_CAPACITY = 7;
 
         public static class FrameTimeline {
-            FrameTimeline() {}
+            FrameTimeline() {
+                // Some reasonable values (+10 ms) for default timestamps.
+                deadline = System.nanoTime() + 10_000_000;
+                expectedPresentationTime = deadline + 10_000_000;
+            }
 
             // Called from native code.
             @SuppressWarnings("unused")
@@ -179,11 +183,11 @@ public abstract class DisplayEventReceiver {
             public long vsyncId = FrameInfo.INVALID_VSYNC_ID;
 
             // The frame timestamp for when the frame is expected to be presented.
-            public long expectedPresentationTime = Long.MAX_VALUE;
+            public long expectedPresentationTime;
 
             // The frame deadline timestamp in {@link System#nanoTime()} timebase that it is
             // allotted for the frame to be completed.
-            public long deadline = Long.MAX_VALUE;
+            public long deadline;
         }
 
         /**
@@ -197,7 +201,9 @@ public abstract class DisplayEventReceiver {
 
         public int preferredFrameTimelineIndex = 0;
 
-        public int frameTimelinesLength = 0;
+        // The default FrameTimeline is a placeholder populated with invalid vsync ID and some
+        // reasonable timestamps.
+        public int frameTimelinesLength = 1;
 
         VsyncEventData() {
             frameTimelines = new FrameTimeline[FRAME_TIMELINES_CAPACITY];
@@ -255,6 +261,16 @@ public abstract class DisplayEventReceiver {
      */
     @UnsupportedAppUsage
     public void onHotplug(long timestampNanos, long physicalDisplayId, boolean connected) {
+    }
+
+    /**
+     * Called when a display hotplug event with connection error is received.
+     *
+     * @param timestampNanos The timestamp of the event, in the {@link System#nanoTime()}
+     * timebase.
+     * @param connectionError the hotplug connection error code.
+     */
+    public void onHotplugConnectionError(long timestampNanos, int connectionError) {
     }
 
     /**
@@ -337,6 +353,11 @@ public abstract class DisplayEventReceiver {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private void dispatchHotplug(long timestampNanos, long physicalDisplayId, boolean connected) {
         onHotplug(timestampNanos, physicalDisplayId, connected);
+    }
+
+    @SuppressWarnings("unused")
+    private void dispatchHotplugConnectionError(long timestampNanos, int connectionError) {
+        onHotplugConnectionError(timestampNanos, connectionError);
     }
 
     // Called from native code.

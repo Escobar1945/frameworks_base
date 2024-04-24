@@ -192,7 +192,7 @@
             android:excludeFromRecents="true" />
 
         <activity
-            android:name="com.android.systemui.notetask.shortcut.LaunchNoteTaskManagedProfileProxyActivity"
+            android:name="com.android.systemui.logcat.LogAccessDialogActivityTest$DialogTestable"
             android:exported="false"
             android:permission="com.android.systemui.permission.SELF"
             android:excludeFromRecents="true" />

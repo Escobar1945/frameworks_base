@@ -15,13 +15,17 @@
  */
 package android.view;
 
+import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UiThread;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.hardware.HardwareBuffer;
+import android.os.IBinder;
 import android.window.SurfaceSyncGroup;
+
+import com.android.window.flags.Flags;
 
 /**
  * Provides an interface to the root-Surface of a View Hierarchy or Window. This
@@ -88,6 +92,12 @@ public interface AttachedSurfaceControl {
      * Note, when using ANativeWindow APIs in conjunction with a NativeActivity Surface or
      * SurfaceView Surface, the buffer producer will already have access to the transform hint and
      * no additional work is needed.
+     *
+     * If the root surface is not available, the API will return {@code BUFFER_TRANSFORM_IDENTITY}.
+     * The caller should register a listener to listen for any changes. @see
+     * {@link #addOnBufferTransformHintChangedListener(OnBufferTransformHintChangedListener)}.
+     * Warning: Calling this API in Android 14 (API Level 34) or earlier will crash if the root
+     * surface is not available.
      *
      * @see HardwareBuffer
      */
@@ -166,5 +176,35 @@ public interface AttachedSurfaceControl {
      * @throws IllegalArgumentException If negative insets are provided.
      */
     default void setChildBoundingInsets(@NonNull Rect insets) {
+    }
+
+    /**
+     * Gets the token used for associating this {@link AttachedSurfaceControl} with
+     * {@link SurfaceControlViewHost} instances.
+     *
+     * <p>This token should be passed to {@link SurfaceControlViewHost}'s constructor.
+     *
+     * @return The SurfaceControlViewHost link token.
+     */
+    @Nullable
+    @FlaggedApi(Flags.FLAG_GET_HOST_TOKEN_API)
+    default IBinder getHostToken() {
+        throw new UnsupportedOperationException("The getHostToken needs to be "
+            + "implemented before making this call.");
+    }
+
+    /**
+     * Transfer the currently in progress touch gesture from the host to the requested
+     * {@link SurfaceControlViewHost.SurfacePackage}. This requires that the
+     * SurfaceControlViewHost was created with the current host's inputToken.
+     *
+     * @param surfacePackage The SurfacePackage to transfer the gesture to.
+     * @return Whether the touch stream was transferred.
+     */
+    @FlaggedApi(Flags.FLAG_TRANSFER_GESTURE_TO_EMBEDDED)
+    default boolean transferHostTouchGestureToEmbedded(
+            @NonNull SurfaceControlViewHost.SurfacePackage surfacePackage) {
+        throw new UnsupportedOperationException(
+                "transferHostTouchGestureToEmbedded is unimplemented");
     }
 }

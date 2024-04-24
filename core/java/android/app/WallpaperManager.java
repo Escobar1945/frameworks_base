@@ -21,6 +21,8 @@ import static android.Manifest.permission.READ_WALLPAPER_INTERNAL;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.os.ParcelFileDescriptor.MODE_READ_ONLY;
 
+import static com.android.window.flags.Flags.multiCrop;
+
 import android.annotation.FloatRange;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
@@ -313,7 +315,6 @@ public class WallpaperManager {
     private final Context mContext;
     private final boolean mWcgEnabled;
     private final ColorManagementProxy mCmProxy;
-    private static Boolean sIsLockscreenLiveWallpaperEnabled = null;
     private static Boolean sIsMultiCropEnabled = null;
 
     /**
@@ -841,29 +842,14 @@ public class WallpaperManager {
     }
 
     /**
+     * TODO (b/305908217) remove
      * Temporary method for project b/197814683.
      * @return true if the lockscreen wallpaper always uses a wallpaperService, not a static image
      * @hide
      */
     @TestApi
     public boolean isLockscreenLiveWallpaperEnabled() {
-        return isLockscreenLiveWallpaperEnabledHelper();
-    }
-
-    private static boolean isLockscreenLiveWallpaperEnabledHelper() {
-        if (sGlobals == null) {
-            sIsLockscreenLiveWallpaperEnabled = SystemProperties.getBoolean(
-                    "persist.wm.debug.lockscreen_live_wallpaper", false);
-        }
-        if (sIsLockscreenLiveWallpaperEnabled == null) {
-            try {
-                sIsLockscreenLiveWallpaperEnabled =
-                        sGlobals.mService.isLockscreenLiveWallpaperEnabled();
-            } catch (RemoteException e) {
-                throw e.rethrowFromSystemServer();
-            }
-        }
-        return sIsLockscreenLiveWallpaperEnabled;
+        return true;
     }
 
     /**
@@ -873,8 +859,7 @@ public class WallpaperManager {
      */
     public static boolean isMultiCropEnabled() {
         if (sGlobals == null) {
-            sIsMultiCropEnabled = SystemProperties.getBoolean(
-                    "persist.wm.debug.wallpaper_multi_crop", false);
+            sIsMultiCropEnabled = multiCrop();
         }
         if (sIsMultiCropEnabled == null) {
             try {
@@ -1759,12 +1744,17 @@ public class WallpaperManager {
 
     /**
      * Returns the information about the home screen wallpaper if its current wallpaper is a live
-     * wallpaper component. Otherwise, if the wallpaper is a static image or is not set, this
-     * returns null.
+     * wallpaper component. Otherwise, if the wallpaper is a static image or is not set, or if the
+     * the caller doesn't have the appropriate permissions, this returns {@code null}.
      *
      * <p>
-     * In order to use this, apps should declare a {@code <queries>} tag with the action
-     * {@code "android.service.wallpaper.WallpaperService"}. Otherwise,
+     * Before Android U, this method requires the
+     * {@link android.Manifest.permission#QUERY_ALL_PACKAGES} permission.
+     * </p>
+     *
+     * <p>
+     * Starting from Android U, In order to use this, apps should declare a {@code <queries>} tag
+     * with the action {@code "android.service.wallpaper.WallpaperService"}. Otherwise,
      * this method will return {@code null} if the caller doesn't otherwise have
      * <a href="{@docRoot}training/package-visibility">visibility</a> of the wallpaper package.
      * </p>
@@ -1780,8 +1770,15 @@ public class WallpaperManager {
 
     /**
      * Returns the information about the designated wallpaper if its current wallpaper is a live
-     * wallpaper component. Otherwise, if the wallpaper is a static image or is not set, this
-     * returns null.
+     * wallpaper component. Otherwise, if the wallpaper is a static image or is not set, or if the
+     * the caller doesn't have the appropriate permissions, this returns {@code null}.
+     *
+     * <p>
+     * In order to use this, apps should declare a {@code <queries>} tag
+     * with the action {@code "android.service.wallpaper.WallpaperService"}. Otherwise,
+     * this method will return {@code null} if the caller doesn't otherwise have
+     * <a href="{@docRoot}training/package-visibility">visibility</a> of the wallpaper package.
+     * </p>
      *
      * @param which Specifies wallpaper to request (home or lock).
      * @param userId Owner of the wallpaper.
@@ -1969,7 +1966,6 @@ public class WallpaperManager {
                     mContext.getUserId());
             if (fd != null) {
                 FileOutputStream fos = null;
-                boolean ok = false;
                 try {
                     fos = new ParcelFileDescriptor.AutoCloseOutputStream(fd);
                     copyStreamToWallpaperFile(resources.openRawResource(resid), fos);
@@ -2430,19 +2426,30 @@ public class WallpaperManager {
     }
 
     /**
-     * Reset all wallpaper to the factory default.
-     *
-     * <p>This method requires the caller to hold the permission
-     * {@link android.Manifest.permission#SET_WALLPAPER}.
+     * Equivalent to {@link #clear()}.
+     * @see #clear()
      */
     @RequiresPermission(android.Manifest.permission.SET_WALLPAPER)
     public void clearWallpaper() {
-        clearWallpaper(FLAG_LOCK, mContext.getUserId());
-        clearWallpaper(FLAG_SYSTEM, mContext.getUserId());
+        clearWallpaper(FLAG_LOCK | FLAG_SYSTEM, mContext.getUserId());
     }
 
     /**
-     * Clear the wallpaper for a specific user.  The caller must hold the
+     * Clear the wallpaper for a specific user.
+     * <ul>
+     *     <li> When called with {@code which=}{@link #FLAG_LOCK}, clear the lockscreen wallpaper.
+     *     The home screen wallpaper will become visible on the lock screen. </li>
+     *
+     *     <li> When called with {@code which=}{@link #FLAG_SYSTEM}, revert the home screen
+     *     wallpaper to default. The lockscreen wallpaper will be unchanged: if the previous
+     *     wallpaper was shared between home and lock screen, it will become lock screen only. </li>
+     *
+     *     <li> When called with {@code which=}({@link #FLAG_LOCK} | {@link #FLAG_SYSTEM}), put the
+     *     default wallpaper on both home and lock screen, removing any user defined wallpaper.</li>
+     * </ul>
+     * </p>
+     *
+     * The caller must hold the
      * INTERACT_ACROSS_USERS_FULL permission to clear another user's
      * wallpaper, and must hold the SET_WALLPAPER permission in all
      * circumstances.
@@ -2652,6 +2659,8 @@ public class WallpaperManager {
      * @param z Arbitrary integer argument based on command.
      * @param extras Optional additional information for the command, or null.
      */
+    @RequiresPermission(value = android.Manifest.permission.ALWAYS_UPDATE_WALLPAPER,
+            conditional = true)
     public void sendWallpaperCommand(IBinder windowToken, String action,
             int x, int y, int z, Bundle extras) {
         try {
@@ -2747,8 +2756,8 @@ public class WallpaperManager {
 
     /**
      * Remove any currently set system wallpaper, reverting to the system's built-in
-     * wallpaper. On success, the intent {@link Intent#ACTION_WALLPAPER_CHANGED}
-     * is broadcast.
+     * wallpaper.
+     * On success, the intent {@link Intent#ACTION_WALLPAPER_CHANGED} is broadcast.
      *
      * <p>This method requires the caller to hold the permission
      * {@link android.Manifest.permission#SET_WALLPAPER}.
@@ -2758,14 +2767,24 @@ public class WallpaperManager {
      */
     @RequiresPermission(android.Manifest.permission.SET_WALLPAPER)
     public void clear() throws IOException {
-        setStream(openDefaultWallpaper(mContext, FLAG_SYSTEM), null, false);
+        clear(FLAG_SYSTEM | FLAG_LOCK);
     }
 
     /**
      * Remove one or more currently set wallpapers, reverting to the system default
-     * display for each one.  If {@link #FLAG_SYSTEM} is set in the {@code which}
-     * parameter, the intent {@link Intent#ACTION_WALLPAPER_CHANGED} will be broadcast
-     * upon success.
+     * display for each one. On success, the intent {@link Intent#ACTION_WALLPAPER_CHANGED}
+     * is broadcast.
+     * <ul>
+     *     <li> When called with {@code which=}{@link #FLAG_LOCK}, clear the lockscreen wallpaper.
+     *     The home screen wallpaper will become visible on the lock screen. </li>
+     *
+     *     <li> When called with {@code which=}{@link #FLAG_SYSTEM}, revert the home screen
+     *     wallpaper to default. The lockscreen wallpaper will be unchanged: if the previous
+     *     wallpaper was shared between home and lock screen, it will become lock screen only. </li>
+     *
+     *     <li> When called with {@code which=}({@link #FLAG_LOCK} | {@link #FLAG_SYSTEM}), put the
+     *     default wallpaper on both home and lock screen, removing any user defined wallpaper.</li>
+     * </ul>
      *
      * @param which A bitwise combination of {@link #FLAG_SYSTEM} or
      *   {@link #FLAG_LOCK}
@@ -2773,12 +2792,7 @@ public class WallpaperManager {
      */
     @RequiresPermission(android.Manifest.permission.SET_WALLPAPER)
     public void clear(@SetWallpaperFlags int which) throws IOException {
-        if ((which & FLAG_SYSTEM) != 0) {
-            clear();
-        }
-        if ((which & FLAG_LOCK) != 0) {
-            clearWallpaper(FLAG_LOCK, mContext.getUserId());
-        }
+        clearWallpaper(which, mContext.getUserId());
     }
 
     /**
@@ -2793,16 +2807,12 @@ public class WallpaperManager {
     public static InputStream openDefaultWallpaper(Context context, @SetWallpaperFlags int which) {
         final String whichProp;
         final int defaultResId;
-        if (which == FLAG_LOCK && !isLockscreenLiveWallpaperEnabledHelper()) {
-            /* Factory-default lock wallpapers are not yet supported
-            whichProp = PROP_LOCK_WALLPAPER;
-            defaultResId = com.android.internal.R.drawable.default_lock_wallpaper;
-            */
-            return null;
-        } else {
-            whichProp = PROP_WALLPAPER;
-            defaultResId = com.android.internal.R.drawable.default_wallpaper;
-        }
+        /* Factory-default lock wallpapers are not yet supported.
+        whichProp = which == FLAG_LOCK ? PROP_LOCK_WALLPAPER : PROP_WALLPAPER;
+        defaultResId = which == FLAG_LOCK ? R.drawable.default_lock_wallpaper :  ....
+        */
+        whichProp = PROP_WALLPAPER;
+        defaultResId = R.drawable.default_wallpaper;
         final String path = SystemProperties.get(whichProp);
         final InputStream wallpaperInputStream = getWallpaperInputStream(path);
         if (wallpaperInputStream != null) {
@@ -2887,38 +2897,57 @@ public class WallpaperManager {
             }
         }
 
-        // Check if the package exists
-        if (cn != null) {
-            try {
-                final PackageManager packageManager = context.getPackageManager();
-                packageManager.getPackageInfo(cn.getPackageName(),
-                        PackageManager.MATCH_DIRECT_BOOT_AWARE
-                                | PackageManager.MATCH_DIRECT_BOOT_UNAWARE);
-            } catch (PackageManager.NameNotFoundException e) {
-                cn = null;
-            }
+        if (!isComponentExist(context, cn)) {
+            cn = null;
         }
 
         return cn;
     }
 
     /**
-     * Register a callback for lock wallpaper observation. Only the OS may use this.
+     * Return {@link ComponentName} of the CMF default wallpaper, or
+     * {@link #getDefaultWallpaperComponent(Context)} if none is defined.
      *
-     * @return true on success; false on error.
      * @hide
      */
-    public boolean setLockWallpaperCallback(IWallpaperManagerCallback callback) {
-        if (sGlobals.mService == null) {
-            Log.w(TAG, "WallpaperService not running");
-            throw new RuntimeException(new DeadSystemException());
+    public static ComponentName getCmfDefaultWallpaperComponent(Context context) {
+        ComponentName cn = null;
+        String[] cmfWallpaperMap = context.getResources().getStringArray(
+                com.android.internal.R.array.default_wallpaper_component_per_device_color);
+        if (cmfWallpaperMap != null && cmfWallpaperMap.length > 0) {
+            for (String entry : cmfWallpaperMap) {
+                String[] cmfWallpaper;
+                if (!TextUtils.isEmpty(entry)) {
+                    cmfWallpaper = entry.split(",");
+                    if (cmfWallpaper != null && cmfWallpaper.length == 2 && VALUE_CMF_COLOR.equals(
+                            cmfWallpaper[0]) && !TextUtils.isEmpty(cmfWallpaper[1])) {
+                        cn = ComponentName.unflattenFromString(cmfWallpaper[1]);
+                        break;
+                    }
+                }
+            }
         }
 
-        try {
-            return sGlobals.mService.setLockWallpaperCallback(callback);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+        if (!isComponentExist(context, cn)) {
+            cn = null;
         }
+
+        return cn == null ? getDefaultWallpaperComponent(context) : cn;
+    }
+
+    private static boolean isComponentExist(Context context, ComponentName cn) {
+        if (cn == null) {
+            return false;
+        }
+        try {
+            final PackageManager packageManager = context.getPackageManager();
+            packageManager.getPackageInfo(cn.getPackageName(),
+                    PackageManager.MATCH_DIRECT_BOOT_AWARE
+                            | PackageManager.MATCH_DIRECT_BOOT_UNAWARE);
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+        return true;
     }
 
     /**

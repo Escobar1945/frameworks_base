@@ -126,7 +126,8 @@ static struct {
     jfieldID height;
     jfieldID xDpi;
     jfieldID yDpi;
-    jfieldID refreshRate;
+    jfieldID peakRefreshRate;
+    jfieldID vsyncRate;
     jfieldID appVsyncOffsetNanos;
     jfieldID presentationDeadlineNanos;
     jfieldID group;
@@ -256,6 +257,14 @@ static struct {
 static struct {
     jmethodID onTrustedPresentationChanged;
 } gTrustedPresentationCallbackClassInfo;
+
+static struct {
+    jclass clazz;
+    jmethodID ctor;
+    jfieldID layerName;
+    jfieldID bufferId;
+    jfieldID frameNumber;
+} gStalledTransactionInfoClassInfo;
 
 constexpr ui::Dataspace pickDataspaceFromColorMode(const ui::ColorMode colorMode) {
     switch (colorMode) {
@@ -461,9 +470,10 @@ static void nativeSetDefaultBufferSize(JNIEnv* env, jclass clazz, jlong nativeOb
     }
 }
 
-static void nativeApplyTransaction(JNIEnv* env, jclass clazz, jlong transactionObj, jboolean sync) {
+static void nativeApplyTransaction(JNIEnv* env, jclass clazz, jlong transactionObj, jboolean sync,
+                                   jboolean oneWay) {
     auto transaction = reinterpret_cast<SurfaceComposerClient::Transaction*>(transactionObj);
-    transaction->apply(sync);
+    transaction->apply(sync, oneWay);
 }
 
 static void nativeMergeTransaction(JNIEnv* env, jclass clazz,
@@ -952,6 +962,21 @@ static void nativeSetDefaultFrameRateCompatibility(JNIEnv* env, jclass clazz, jl
     transaction->setDefaultFrameRateCompatibility(ctrl, static_cast<int8_t>(compatibility));
 }
 
+static void nativeSetFrameRateCategory(JNIEnv* env, jclass clazz, jlong transactionObj,
+                                       jlong nativeObject, jint category,
+                                       jboolean smoothSwitchOnly) {
+    auto transaction = reinterpret_cast<SurfaceComposerClient::Transaction*>(transactionObj);
+    const auto ctrl = reinterpret_cast<SurfaceControl*>(nativeObject);
+    transaction->setFrameRateCategory(ctrl, static_cast<int8_t>(category), smoothSwitchOnly);
+}
+
+static void nativeSetFrameRateSelectionStrategy(JNIEnv* env, jclass clazz, jlong transactionObj,
+                                                jlong nativeObject, jint strategy) {
+    auto transaction = reinterpret_cast<SurfaceComposerClient::Transaction*>(transactionObj);
+    const auto ctrl = reinterpret_cast<SurfaceControl*>(nativeObject);
+    transaction->setFrameRateSelectionStrategy(ctrl, static_cast<int8_t>(strategy));
+}
+
 static void nativeSetFixedTransformHint(JNIEnv* env, jclass clazz, jlong transactionObj,
                                         jlong nativeObject, jint transformHint) {
     auto transaction = reinterpret_cast<SurfaceComposerClient::Transaction*>(transactionObj);
@@ -1207,7 +1232,8 @@ static jobject convertDisplayModeToJavaObject(JNIEnv* env, const ui::DisplayMode
     env->SetFloatField(object, gDisplayModeClassInfo.xDpi, config.xDpi);
     env->SetFloatField(object, gDisplayModeClassInfo.yDpi, config.yDpi);
 
-    env->SetFloatField(object, gDisplayModeClassInfo.refreshRate, config.refreshRate);
+    env->SetFloatField(object, gDisplayModeClassInfo.peakRefreshRate, config.peakRefreshRate);
+    env->SetFloatField(object, gDisplayModeClassInfo.vsyncRate, config.vsyncRate);
     env->SetLongField(object, gDisplayModeClassInfo.appVsyncOffsetNanos, config.appVsyncOffset);
     env->SetLongField(object, gDisplayModeClassInfo.presentationDeadlineNanos,
                       config.presentationDeadline);
@@ -1924,9 +1950,10 @@ public:
 
         jobjectArray jJankDataArray = env->NewObjectArray(jankData.size(),
                 gJankDataClassInfo.clazz, nullptr);
-        for (int i = 0; i < jankData.size(); i++) {
-            jobject jJankData = env->NewObject(gJankDataClassInfo.clazz,
-                    gJankDataClassInfo.ctor, jankData[i].frameVsyncId, jankData[i].jankType);
+        for (size_t i = 0; i < jankData.size(); i++) {
+            jobject jJankData = env->NewObject(gJankDataClassInfo.clazz, gJankDataClassInfo.ctor,
+                                               jankData[i].frameVsyncId, jankData[i].jankType,
+                                               jankData[i].frameIntervalNs);
             env->SetObjectArrayElement(jJankDataArray, i, jJankData);
             env->DeleteLocalRef(jJankData);
         }
@@ -2032,6 +2059,29 @@ static jlong getNativeTrustedPresentationCallbackFinalizer(JNIEnv* env, jclass c
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(&destroyNativeTpc));
 }
 
+static jobject nativeGetStalledTransactionInfo(JNIEnv* env, jclass clazz, jint pid) {
+    std::optional<gui::StalledTransactionInfo> stalledTransactionInfo =
+            SurfaceComposerClient::getStalledTransactionInfo(pid);
+    if (!stalledTransactionInfo) {
+        return nullptr;
+    }
+
+    jobject jStalledTransactionInfo = env->NewObject(gStalledTransactionInfoClassInfo.clazz,
+                                                     gStalledTransactionInfoClassInfo.ctor);
+    if (!jStalledTransactionInfo) {
+        jniThrowException(env, "java/lang/OutOfMemoryError", nullptr);
+        return nullptr;
+    }
+
+    env->SetObjectField(jStalledTransactionInfo, gStalledTransactionInfoClassInfo.layerName,
+                        env->NewStringUTF(String8{stalledTransactionInfo->layerName}));
+    env->SetLongField(jStalledTransactionInfo, gStalledTransactionInfoClassInfo.bufferId,
+                      static_cast<jlong>(stalledTransactionInfo->bufferId));
+    env->SetLongField(jStalledTransactionInfo, gStalledTransactionInfoClassInfo.frameNumber,
+                      static_cast<jlong>(stalledTransactionInfo->frameNumber));
+    return jStalledTransactionInfo;
+}
+
 // ----------------------------------------------------------------------------
 
 SurfaceControl* android_view_SurfaceControl_getNativeSurfaceControl(JNIEnv* env,
@@ -2074,7 +2124,7 @@ static const JNINativeMethod sSurfaceControlMethods[] = {
             (void*)nativeSetDefaultBufferSize},
     {"nativeCreateTransaction", "()J",
             (void*)nativeCreateTransaction },
-    {"nativeApplyTransaction", "(JZ)V",
+    {"nativeApplyTransaction", "(JZZ)V",
             (void*)nativeApplyTransaction },
     {"nativeGetNativeTransactionFinalizer", "()J",
             (void*)nativeGetNativeTransactionFinalizer },
@@ -2133,6 +2183,10 @@ static const JNINativeMethod sSurfaceControlMethods[] = {
             (void*)nativeSetFrameRate },
     {"nativeSetDefaultFrameRateCompatibility", "(JJI)V",
             (void*)nativeSetDefaultFrameRateCompatibility},
+    {"nativeSetFrameRateCategory", "(JJIZ)V",
+            (void*)nativeSetFrameRateCategory},
+    {"nativeSetFrameRateSelectionStrategy", "(JJI)V",
+            (void*)nativeSetFrameRateSelectionStrategy},
     {"nativeSetDisplaySurface", "(JLandroid/os/IBinder;J)V",
             (void*)nativeSetDisplaySurface },
     {"nativeSetDisplayLayerStack", "(JLandroid/os/IBinder;I)V",
@@ -2281,6 +2335,8 @@ static const JNINativeMethod sSurfaceControlMethods[] = {
     {"nativeCreateTpc", "(Landroid/view/SurfaceControl$TrustedPresentationCallback;)J",
             (void*)nativeCreateTpc},
     {"getNativeTrustedPresentationCallbackFinalizer", "()J", (void*)getNativeTrustedPresentationCallbackFinalizer },
+    {"nativeGetStalledTransactionInfo", "(I)Landroid/gui/StalledTransactionInfo;",
+            (void*) nativeGetStalledTransactionInfo },
         // clang-format on
 };
 
@@ -2341,7 +2397,8 @@ int register_android_view_SurfaceControl(JNIEnv* env)
     gDisplayModeClassInfo.height = GetFieldIDOrDie(env, modeClazz, "height", "I");
     gDisplayModeClassInfo.xDpi = GetFieldIDOrDie(env, modeClazz, "xDpi", "F");
     gDisplayModeClassInfo.yDpi = GetFieldIDOrDie(env, modeClazz, "yDpi", "F");
-    gDisplayModeClassInfo.refreshRate = GetFieldIDOrDie(env, modeClazz, "refreshRate", "F");
+    gDisplayModeClassInfo.peakRefreshRate = GetFieldIDOrDie(env, modeClazz, "peakRefreshRate", "F");
+    gDisplayModeClassInfo.vsyncRate = GetFieldIDOrDie(env, modeClazz, "vsyncRate", "F");
     gDisplayModeClassInfo.appVsyncOffsetNanos =
             GetFieldIDOrDie(env, modeClazz, "appVsyncOffsetNanos", "J");
     gDisplayModeClassInfo.presentationDeadlineNanos =
@@ -2467,8 +2524,7 @@ int register_android_view_SurfaceControl(JNIEnv* env)
     jclass jankDataClazz =
                 FindClassOrDie(env, "android/view/SurfaceControl$JankData");
     gJankDataClassInfo.clazz = MakeGlobalRefOrDie(env, jankDataClazz);
-    gJankDataClassInfo.ctor =
-            GetMethodIDOrDie(env, gJankDataClassInfo.clazz, "<init>", "(JI)V");
+    gJankDataClassInfo.ctor = GetMethodIDOrDie(env, gJankDataClassInfo.clazz, "<init>", "(JIJ)V");
     jclass onJankDataListenerClazz =
             FindClassOrDie(env, "android/view/SurfaceControl$OnJankDataListener");
     gJankDataListenerClassInfo.clazz = MakeGlobalRefOrDie(env, onJankDataListenerClazz);
@@ -2524,6 +2580,18 @@ int register_android_view_SurfaceControl(JNIEnv* env)
     gTrustedPresentationCallbackClassInfo.onTrustedPresentationChanged =
             GetMethodIDOrDie(env, trustedPresentationCallbackClazz, "onTrustedPresentationChanged",
                              "(Z)V");
+
+    jclass stalledTransactionInfoClazz = FindClassOrDie(env, "android/gui/StalledTransactionInfo");
+    gStalledTransactionInfoClassInfo.clazz = MakeGlobalRefOrDie(env, stalledTransactionInfoClazz);
+    gStalledTransactionInfoClassInfo.ctor =
+            GetMethodIDOrDie(env, stalledTransactionInfoClazz, "<init>", "()V");
+    gStalledTransactionInfoClassInfo.layerName =
+            GetFieldIDOrDie(env, stalledTransactionInfoClazz, "layerName", "Ljava/lang/String;");
+    gStalledTransactionInfoClassInfo.bufferId =
+            GetFieldIDOrDie(env, stalledTransactionInfoClazz, "bufferId", "J");
+    gStalledTransactionInfoClassInfo.frameNumber =
+            GetFieldIDOrDie(env, stalledTransactionInfoClazz, "frameNumber", "J");
+
     return err;
 }
 

@@ -17,20 +17,22 @@
 package com.android.server.wm;
 
 import static android.graphics.Bitmap.CompressFormat.JPEG;
+import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
 
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WM;
 
 import android.annotation.NonNull;
-import android.annotation.TestApi;
 import android.graphics.Bitmap;
 import android.os.Process;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.util.AtomicFile;
 import android.util.Slog;
 import android.window.TaskSnapshot;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalServices;
 import com.android.server.pm.UserManagerInternal;
 import com.android.server.wm.BaseAppSnapshotPersister.PersistInfoProvider;
@@ -98,7 +100,7 @@ class SnapshotPersistQueue {
         }
     }
 
-    @TestApi
+    @VisibleForTesting
     void waitForQueueEmpty() {
         while (true) {
             synchronized (mLock) {
@@ -110,14 +112,35 @@ class SnapshotPersistQueue {
         }
     }
 
-    @GuardedBy("mLock")
-    void sendToQueueLocked(WriteQueueItem item) {
-        mWriteQueue.offer(item);
+    @VisibleForTesting
+    int peekQueueSize() {
+        synchronized (mLock) {
+            return mWriteQueue.size();
+        }
+    }
+
+    private void addToQueueInternal(WriteQueueItem item, boolean insertToFront) {
+        mWriteQueue.removeFirstOccurrence(item);
+        if (insertToFront) {
+            mWriteQueue.addFirst(item);
+        } else {
+            mWriteQueue.addLast(item);
+        }
         item.onQueuedLocked();
         ensureStoreQueueDepthLocked();
         if (!mPaused) {
             mLock.notifyAll();
         }
+    }
+
+    @GuardedBy("mLock")
+    void sendToQueueLocked(WriteQueueItem item) {
+        addToQueueInternal(item, false /* insertToFront */);
+    }
+
+    @GuardedBy("mLock")
+    void insertQueueAtFirstLocked(WriteQueueItem item) {
+        addToQueueInternal(item, true /* insertToFront */);
     }
 
     @GuardedBy("mLock")
@@ -233,6 +256,8 @@ class SnapshotPersistQueue {
         @GuardedBy("mLock")
         @Override
         void onQueuedLocked() {
+            // Remove duplicate request.
+            mStoreQueueItems.remove(this);
             mStoreQueueItems.offer(this);
         }
 
@@ -249,6 +274,7 @@ class SnapshotPersistQueue {
 
         @Override
         void write() {
+            Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "StoreWriteQueueItem");
             if (!mPersistInfoProvider.createDirectory(mUserId)) {
                 Slog.e(TAG, "Unable to create snapshot directory for user dir="
                         + mPersistInfoProvider.getDirectory(mUserId));
@@ -263,6 +289,7 @@ class SnapshotPersistQueue {
             if (failed) {
                 deleteSnapshot(mId, mUserId, mPersistInfoProvider);
             }
+            Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);
         }
 
         boolean writeProto() {
@@ -354,6 +381,14 @@ class SnapshotPersistQueue {
 
             return true;
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == null || getClass() != o.getClass()) return false;
+            final StoreWriteQueueItem other = (StoreWriteQueueItem) o;
+            return mId == other.mId && mUserId == other.mUserId
+                    && mPersistInfoProvider == other.mPersistInfoProvider;
+        }
     }
 
     DeleteWriteQueueItem createDeleteWriteQueueItem(int id, int userId,
@@ -373,7 +408,9 @@ class SnapshotPersistQueue {
 
         @Override
         void write() {
+            Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "DeleteWriteQueueItem");
             deleteSnapshot(mId, mUserId, mPersistInfoProvider);
+            Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);
         }
     }
 }

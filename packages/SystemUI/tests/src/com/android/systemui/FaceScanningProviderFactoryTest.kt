@@ -53,8 +53,6 @@ class FaceScanningProviderFactoryTest : SysuiTestCase() {
 
     @Mock private lateinit var keyguardUpdateMonitor: KeyguardUpdateMonitor
 
-    @Mock private lateinit var display: Display
-
     private val displayId = 2
 
     @Before
@@ -87,7 +85,7 @@ class FaceScanningProviderFactoryTest : SysuiTestCase() {
                 statusBarStateController,
                 keyguardUpdateMonitor,
                 mock(Executor::class.java),
-                ScreenDecorationsLogger(logcatLogBuffer("FaceScanningProviderFactoryTest"))
+                ScreenDecorationsLogger(logcatLogBuffer("FaceScanningProviderFactoryTest")),
             )
 
         whenever(authController.faceSensorLocation).thenReturn(Point(10, 10))
@@ -95,7 +93,7 @@ class FaceScanningProviderFactoryTest : SysuiTestCase() {
 
     @Test
     fun shouldNotShowFaceScanningAnimationIfFaceIsNotEnrolled() {
-        whenever(keyguardUpdateMonitor.isFaceEnrolled).thenReturn(false)
+        whenever(keyguardUpdateMonitor.isFaceEnabledAndEnrolled).thenReturn(false)
         whenever(authController.isShowing).thenReturn(true)
 
         assertThat(underTest.shouldShowFaceScanningAnim()).isFalse()
@@ -103,7 +101,7 @@ class FaceScanningProviderFactoryTest : SysuiTestCase() {
 
     @Test
     fun shouldShowFaceScanningAnimationIfBiometricPromptIsShowing() {
-        whenever(keyguardUpdateMonitor.isFaceEnrolled).thenReturn(true)
+        whenever(keyguardUpdateMonitor.isFaceEnabledAndEnrolled).thenReturn(true)
         whenever(authController.isShowing).thenReturn(true)
 
         assertThat(underTest.shouldShowFaceScanningAnim()).isTrue()
@@ -111,7 +109,7 @@ class FaceScanningProviderFactoryTest : SysuiTestCase() {
 
     @Test
     fun shouldShowFaceScanningAnimationIfKeyguardFaceDetectionIsShowing() {
-        whenever(keyguardUpdateMonitor.isFaceEnrolled).thenReturn(true)
+        whenever(keyguardUpdateMonitor.isFaceEnabledAndEnrolled).thenReturn(true)
         whenever(keyguardUpdateMonitor.isFaceDetectionRunning).thenReturn(true)
 
         assertThat(underTest.shouldShowFaceScanningAnim()).isTrue()

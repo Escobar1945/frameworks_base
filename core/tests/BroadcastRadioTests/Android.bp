@@ -38,13 +38,16 @@ android_test {
     static_libs: [
         "services.core",
         "androidx.test.rules",
-        "truth-prebuilt",
+        "truth",
         "testng",
+        "android.hardware.radio.flags-aconfig-java",
+        "flag-junit",
         "mockito-target-extended",
     ],
     libs: ["android.test.base"],
     test_suites: [
         "general-tests",
+        "automotive-general-tests",
     ],
     // mockito-target-inline dependency
     jni_libs: [

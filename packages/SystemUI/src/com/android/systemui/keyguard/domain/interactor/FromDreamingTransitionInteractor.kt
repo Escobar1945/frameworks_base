@@ -24,82 +24,56 @@ import com.android.systemui.keyguard.data.repository.KeyguardTransitionRepositor
 import com.android.systemui.keyguard.shared.model.BiometricUnlockModel
 import com.android.systemui.keyguard.shared.model.DozeStateModel
 import com.android.systemui.keyguard.shared.model.KeyguardState
-import com.android.systemui.keyguard.shared.model.TransitionInfo
 import com.android.systemui.util.kotlin.Utils.Companion.toTriple
 import com.android.systemui.util.kotlin.sample
 import javax.inject.Inject
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 @SysUISingleton
 class FromDreamingTransitionInteractor
 @Inject
 constructor(
+    override val transitionRepository: KeyguardTransitionRepository,
+    override val transitionInteractor: KeyguardTransitionInteractor,
     @Application private val scope: CoroutineScope,
     private val keyguardInteractor: KeyguardInteractor,
-    private val keyguardTransitionRepository: KeyguardTransitionRepository,
-    private val keyguardTransitionInteractor: KeyguardTransitionInteractor,
-) : TransitionInteractor(FromDreamingTransitionInteractor::class.simpleName!!) {
+) :
+    TransitionInteractor(
+        fromState = KeyguardState.DREAMING,
+    ) {
 
     override fun start() {
         listenForDreamingToOccluded()
         listenForDreamingToGone()
-        listenForDreamingToDozing()
+        listenForDreamingToAodOrDozing()
+        listenForTransitionToCamera(scope, keyguardInteractor)
     }
 
     fun startToLockscreenTransition() {
         scope.launch {
-            if (keyguardTransitionInteractor.startedKeyguardState.value == KeyguardState.DREAMING) {
-                keyguardTransitionRepository.startTransition(
-                    TransitionInfo(
-                        name,
-                        KeyguardState.DREAMING,
-                        KeyguardState.LOCKSCREEN,
-                        getAnimator(TO_LOCKSCREEN_DURATION),
-                    )
-                )
+            if (
+                transitionInteractor.startedKeyguardState.replayCache.last() ==
+                    KeyguardState.DREAMING
+            ) {
+                startTransitionTo(KeyguardState.LOCKSCREEN)
             }
         }
     }
 
     private fun listenForDreamingToOccluded() {
         scope.launch {
-            keyguardInteractor.isDreaming
-                // Add a slight delay, as dreaming and occluded events will arrive with a small gap
-                // in time. This prevents a transition to OCCLUSION happening prematurely.
-                .onEach { delay(50) }
-                .sample(
-                    combine(
-                        keyguardInteractor.isKeyguardOccluded,
-                        keyguardTransitionInteractor.startedKeyguardTransitionStep,
-                        ::Pair,
-                    ),
-                    ::toTriple
-                )
-                .collect { (isDreaming, isOccluded, lastStartedTransition) ->
+            combine(keyguardInteractor.isKeyguardOccluded, keyguardInteractor.isDreaming, ::Pair)
+                .sample(transitionInteractor.startedKeyguardTransitionStep, ::toTriple)
+                .collect { (isOccluded, isDreaming, lastStartedTransition) ->
                     if (
                         isOccluded &&
                             !isDreaming &&
-                            (lastStartedTransition.to == KeyguardState.DREAMING ||
-                                lastStartedTransition.to == KeyguardState.LOCKSCREEN)
+                            lastStartedTransition.to == KeyguardState.DREAMING
                     ) {
-                        // At the moment, checking for LOCKSCREEN state above provides a corrective
-                        // action. There's no great signal to determine when the dream is ending
-                        // and a transition to OCCLUDED is beginning directly. For now, the solution
-                        // is DREAMING->LOCKSCREEN->OCCLUDED
-                        keyguardTransitionRepository.startTransition(
-                            TransitionInfo(
-                                name,
-                                lastStartedTransition.to,
-                                KeyguardState.OCCLUDED,
-                                getAnimator(),
-                            )
-                        )
+                        startTransitionTo(KeyguardState.OCCLUDED)
                     }
                 }
         }
@@ -107,50 +81,44 @@ constructor(
 
     private fun listenForDreamingToGone() {
         scope.launch {
-            keyguardInteractor.biometricUnlockState.collect { biometricUnlockState ->
-                if (biometricUnlockState == BiometricUnlockModel.WAKE_AND_UNLOCK_FROM_DREAM) {
-                    keyguardTransitionRepository.startTransition(
-                        TransitionInfo(
-                            name,
-                            KeyguardState.DREAMING,
-                            KeyguardState.GONE,
-                            getAnimator(),
-                        )
-                    )
-                }
-            }
-        }
-    }
-
-    private fun listenForDreamingToDozing() {
-        scope.launch {
-            combine(
-                    keyguardInteractor.dozeTransitionModel,
-                    keyguardTransitionInteractor.finishedKeyguardState,
-                    ::Pair
-                )
-                .collect { (dozeTransitionModel, keyguardState) ->
+            keyguardInteractor.biometricUnlockState
+                .sample(transitionInteractor.startedKeyguardTransitionStep, ::Pair)
+                .collect { (biometricUnlockState, lastStartedTransitionStep) ->
                     if (
-                        dozeTransitionModel.to == DozeStateModel.DOZE &&
-                            keyguardState == KeyguardState.DREAMING
+                        lastStartedTransitionStep.to == KeyguardState.DREAMING &&
+                            biometricUnlockState == BiometricUnlockModel.WAKE_AND_UNLOCK_FROM_DREAM
                     ) {
-                        keyguardTransitionRepository.startTransition(
-                            TransitionInfo(
-                                name,
-                                KeyguardState.DREAMING,
-                                KeyguardState.DOZING,
-                                getAnimator(),
-                            )
-                        )
+                        startTransitionTo(KeyguardState.GONE)
                     }
                 }
         }
     }
 
-    private fun getAnimator(duration: Duration = DEFAULT_DURATION): ValueAnimator {
+    private fun listenForDreamingToAodOrDozing() {
+        scope.launch {
+            combine(
+                    keyguardInteractor.dozeTransitionModel,
+                    transitionInteractor.finishedKeyguardState,
+                    ::Pair
+                )
+                .collect { (dozeTransitionModel, keyguardState) ->
+                    if (keyguardState == KeyguardState.DREAMING) {
+                        if (dozeTransitionModel.to == DozeStateModel.DOZE) {
+                            startTransitionTo(KeyguardState.DOZING)
+                        } else if (dozeTransitionModel.to == DozeStateModel.DOZE_AOD) {
+                            startTransitionTo(KeyguardState.AOD)
+                        }
+                    }
+                }
+        }
+    }
+
+    override fun getDefaultAnimatorForTransitionsToState(toState: KeyguardState): ValueAnimator {
         return ValueAnimator().apply {
-            setInterpolator(Interpolators.LINEAR)
-            setDuration(duration.inWholeMilliseconds)
+            interpolator = Interpolators.LINEAR
+            duration =
+                if (toState == KeyguardState.LOCKSCREEN) TO_LOCKSCREEN_DURATION.inWholeMilliseconds
+                else DEFAULT_DURATION.inWholeMilliseconds
         }
     }
 

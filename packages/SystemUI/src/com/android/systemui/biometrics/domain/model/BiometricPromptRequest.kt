@@ -1,6 +1,8 @@
 package com.android.systemui.biometrics.domain.model
 
 import android.hardware.biometrics.PromptInfo
+import com.android.systemui.biometrics.shared.model.BiometricModalities
+import com.android.systemui.biometrics.shared.model.BiometricUserInfo
 
 /**
  * Preferences for BiometricPrompt, such as title & description, that are immutable while the prompt
@@ -15,6 +17,7 @@ sealed class BiometricPromptRequest(
     val description: String,
     val userInfo: BiometricUserInfo,
     val operationInfo: BiometricOperationInfo,
+    val showEmergencyCallButton: Boolean,
 ) {
     /** Prompt using one or more biometrics. */
     class Biometric(
@@ -28,7 +31,8 @@ sealed class BiometricPromptRequest(
             subtitle = info.subtitle?.toString() ?: "",
             description = info.description?.toString() ?: "",
             userInfo = userInfo,
-            operationInfo = operationInfo
+            operationInfo = operationInfo,
+            showEmergencyCallButton = info.isShowEmergencyCallButton
         ) {
         val negativeButtonText: String = info.negativeButtonText?.toString() ?: ""
     }
@@ -45,6 +49,7 @@ sealed class BiometricPromptRequest(
             description = (info.deviceCredentialDescription ?: info.description)?.toString() ?: "",
             userInfo = userInfo,
             operationInfo = operationInfo,
+            showEmergencyCallButton = info.isShowEmergencyCallButton
         ) {
 
         /** PIN prompt. */

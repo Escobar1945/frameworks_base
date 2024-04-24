@@ -19,14 +19,17 @@ package com.android.server.app;
 import static android.content.Intent.ACTION_PACKAGE_ADDED;
 import static android.content.Intent.ACTION_PACKAGE_REMOVED;
 import static android.content.Intent.EXTRA_REPLACING;
+import static android.server.app.Flags.gameDefaultFrameRate;
 
 import static com.android.internal.R.styleable.GameModeConfig_allowGameAngleDriver;
 import static com.android.internal.R.styleable.GameModeConfig_allowGameDownscaling;
 import static com.android.internal.R.styleable.GameModeConfig_allowGameFpsOverride;
 import static com.android.internal.R.styleable.GameModeConfig_supportsBatteryGameMode;
 import static com.android.internal.R.styleable.GameModeConfig_supportsPerformanceGameMode;
+import static com.android.internal.util.ConcurrentUtils.DIRECT_EXECUTOR;
 
 import android.Manifest;
+import android.annotation.EnforcePermission;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
@@ -40,6 +43,7 @@ import android.app.GameModeInfo;
 import android.app.GameState;
 import android.app.IGameManagerService;
 import android.app.IGameModeListener;
+import android.app.IGameStateListener;
 import android.app.StatsManager;
 import android.app.UidObserver;
 import android.content.BroadcastReceiver;
@@ -64,11 +68,13 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.PermissionEnforcer;
 import android.os.PowerManagerInternal;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.ShellCallback;
+import android.os.SystemProperties;
 import android.os.UserManager;
 import android.provider.DeviceConfig;
 import android.provider.DeviceConfig.Properties;
@@ -128,8 +134,6 @@ public final class GameManagerService extends IGameManagerService.Stub {
     private static final String EVENT_ON_USER_SWITCHING = "ON_USER_SWITCHING";
     private static final String EVENT_ON_USER_STOPPING = "ON_USER_STOPPING";
 
-    private static final boolean DEBUG = false;
-
     static final int WRITE_SETTINGS = 1;
     static final int REMOVE_SETTINGS = 2;
     static final int POPULATE_GAME_MODE_SETTINGS = 3;
@@ -138,6 +142,10 @@ public final class GameManagerService extends IGameManagerService.Stub {
     static final int WRITE_GAME_MODE_INTERVENTION_LIST_FILE = 6;
     static final int WRITE_DELAY_MILLIS = 10 * 1000;  // 10 seconds
     static final int LOADING_BOOST_MAX_DURATION = 5 * 1000;  // 5 seconds
+    static final String PROPERTY_PERSISTENT_GFX_GAME_DEFAULT_FRAME_RATE_ENABLED =
+            "persist.graphics.game_default_frame_rate.enabled";
+    static final String PROPERTY_RO_SURFACEFLINGER_GAME_DEFAULT_FRAME_RATE =
+            "ro.surface_flinger.game_default_frame_rate_override";
 
     private static final String PACKAGE_NAME_MSG_KEY = "packageName";
     private static final String USER_ID_MSG_KEY = "userId";
@@ -148,12 +156,12 @@ public final class GameManagerService extends IGameManagerService.Stub {
     private final Object mLock = new Object();
     private final Object mDeviceConfigLock = new Object();
     private final Object mGameModeListenerLock = new Object();
+    private final Object mGameStateListenerLock = new Object();
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     final Handler mHandler;
     private final PackageManager mPackageManager;
     private final UserManager mUserManager;
     private final PowerManagerInternal mPowerManagerInternal;
-    private final File mSystemDir;
     @VisibleForTesting
     final AtomicFile mGameModeInterventionListFile;
     private DeviceConfigListener mDeviceConfigListener;
@@ -164,6 +172,8 @@ public final class GameManagerService extends IGameManagerService.Stub {
     // listener to caller uid map
     @GuardedBy("mGameModeListenerLock")
     private final ArrayMap<IGameModeListener, Integer> mGameModeListeners = new ArrayMap<>();
+    @GuardedBy("mGameStateListenerLock")
+    private final ArrayMap<IGameStateListener, Integer> mGameStateListeners = new ArrayMap<>();
     @Nullable
     private final GameServiceController mGameServiceController;
     private final Object mUidObserverLock = new Object();
@@ -172,28 +182,57 @@ public final class GameManagerService extends IGameManagerService.Stub {
     final MyUidObserver mUidObserver;
     @GuardedBy("mUidObserverLock")
     private final Set<Integer> mForegroundGameUids = new HashSet<>();
+    private final GameManagerServiceSystemPropertiesWrapper mSysProps;
+    private float mGameDefaultFrameRateValue;
+
+    @VisibleForTesting
+    static class Injector {
+        public GameManagerServiceSystemPropertiesWrapper createSystemPropertiesWrapper() {
+            return new GameManagerServiceSystemPropertiesWrapper() {
+                @Override
+                public String get(String key, String def) {
+                    return SystemProperties.get(key, def);
+                }
+                @Override
+                public boolean getBoolean(String key, boolean def) {
+                    return SystemProperties.getBoolean(key, def);
+                }
+
+                @Override
+                public int getInt(String key, int def) {
+                    return SystemProperties.getInt(key, def);
+                }
+
+                @Override
+                public void set(String key, String val) {
+                    SystemProperties.set(key, val);
+                }
+            };
+        }
+    }
 
     public GameManagerService(Context context) {
         this(context, createServiceThread().getLooper());
     }
 
     GameManagerService(Context context, Looper looper) {
-        this(context, looper, Environment.getDataDirectory());
+        this(context, looper, Environment.getDataDirectory(), new Injector());
     }
 
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
-    GameManagerService(Context context, Looper looper, File dataDir) {
+    GameManagerService(Context context, Looper looper, File dataDir, Injector injector) {
+        super(PermissionEnforcer.fromContext(context));
         mContext = context;
         mHandler = new SettingsHandler(looper);
         mPackageManager = mContext.getPackageManager();
         mUserManager = mContext.getSystemService(UserManager.class);
         mPowerManagerInternal = LocalServices.getService(PowerManagerInternal.class);
-        mSystemDir = new File(dataDir, "system");
-        mSystemDir.mkdirs();
-        FileUtils.setPermissions(mSystemDir.toString(),
+        File systemDir = new File(dataDir, "system");
+        systemDir.mkdirs();
+        FileUtils.setPermissions(systemDir.toString(),
                 FileUtils.S_IRWXU | FileUtils.S_IRWXG | FileUtils.S_IROTH | FileUtils.S_IXOTH,
                 -1, -1);
-        mGameModeInterventionListFile = new AtomicFile(new File(mSystemDir,
+        mGameModeInterventionListFile = new AtomicFile(new File(systemDir,
                 GAME_MODE_INTERVENTION_LIST_FILE_NAME));
         FileUtils.setPermissions(mGameModeInterventionListFile.getBaseFile().getAbsolutePath(),
                 FileUtils.S_IRUSR | FileUtils.S_IWUSR
@@ -217,6 +256,8 @@ public final class GameManagerService extends IGameManagerService.Stub {
         } catch (RemoteException e) {
             Slog.w(TAG, "Could not register UidObserver");
         }
+
+        mSysProps = injector.createSystemPropertiesWrapper();
     }
 
     @Override
@@ -342,6 +383,9 @@ public final class GameManagerService extends IGameManagerService.Stub {
                         if (mHandler.hasMessages(CANCEL_GAME_LOADING_MODE)) {
                             mHandler.removeMessages(CANCEL_GAME_LOADING_MODE);
                         }
+                        Slog.v(TAG, String.format(
+                                "Game loading power mode %s (game state change isLoading=%b)",
+                                        isLoading ? "ON" : "OFF", isLoading));
                         mPowerManagerInternal.setPowerMode(Mode.GAME_LOADING, isLoading);
                         if (isLoading) {
                             int loadingBoostDuration = getLoadingBoostDuration(packageName, userId);
@@ -352,9 +396,20 @@ public final class GameManagerService extends IGameManagerService.Stub {
                                     loadingBoostDuration);
                         }
                     }
+                    synchronized (mGameStateListenerLock) {
+                        for (IGameStateListener listener : mGameStateListeners.keySet()) {
+                            try {
+                                listener.onGameStateChanged(packageName, gameState, userId);
+                            } catch (RemoteException ex) {
+                                Slog.w(TAG, "Cannot notify game state change for listener added by "
+                                        + mGameStateListeners.get(listener));
+                            }
+                        }
+                    }
                     break;
                 }
                 case CANCEL_GAME_LOADING_MODE: {
+                    Slog.v(TAG, "Game loading power mode OFF (loading boost ended)");
                     mPowerManagerInternal.setPowerMode(Mode.GAME_LOADING, false);
                     break;
                 }
@@ -389,6 +444,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
         @Override
         public void onPropertiesChanged(Properties properties) {
             final String[] packageNames = properties.getKeyset().toArray(new String[0]);
+            Slog.v(TAG, "Device config changed for packages: " + Arrays.toString(packageNames));
             updateConfigsForUser(ActivityManager.getCurrentUser(), true /*checkGamePackage*/,
                     packageNames);
         }
@@ -397,59 +453,6 @@ public final class GameManagerService extends IGameManagerService.Stub {
         public void finalize() {
             DeviceConfig.removeOnPropertiesChangedListener(this);
         }
-    }
-
-    public enum FrameRate {
-        FPS_DEFAULT(0),
-        FPS_30(30),
-        FPS_36(36),
-        FPS_40(40),
-        FPS_45(45),
-        FPS_48(48),
-        FPS_60(60),
-        FPS_72(72),
-        FPS_90(90),
-        FPS_120(120),
-        FPS_144(144),
-        FPS_INVALID(-1);
-
-        public final int fps;
-
-        FrameRate(int fps) {
-            this.fps = fps;
-        }
-    }
-
-    // Turn the raw string to the corresponding fps int.
-    // Return 0 when disabling, -1 for invalid fps.
-    static int getFpsInt(String raw) {
-        // TODO(b/243448953): make sure this translates to proper values based on current display
-        switch (raw) {
-            case "30":
-                return FrameRate.FPS_30.fps;
-            case "36":
-                return FrameRate.FPS_36.fps;
-            case "40":
-                return FrameRate.FPS_40.fps;
-            case "45":
-                return FrameRate.FPS_45.fps;
-            case "48":
-                return FrameRate.FPS_48.fps;
-            case "60":
-                return FrameRate.FPS_60.fps;
-            case "72":
-                return FrameRate.FPS_72.fps;
-            case "90":
-                return FrameRate.FPS_90.fps;
-            case "120":
-                return FrameRate.FPS_120.fps;
-            case "144":
-                return FrameRate.FPS_144.fps;
-            case "disable":
-            case "":
-                return FrameRate.FPS_DEFAULT.fps;
-        }
-        return FrameRate.FPS_INVALID.fps;
     }
 
     /**
@@ -699,7 +702,12 @@ public final class GameManagerService extends IGameManagerService.Stub {
             }
 
             public synchronized int getFps() {
-                return GameManagerService.getFpsInt(mFps);
+                try {
+                    final int fpsInt = Integer.parseInt(mFps);
+                    return fpsInt;
+                } catch (NumberFormatException e) {
+                    return 0;
+                }
             }
 
             synchronized String getFpsStr() {
@@ -739,7 +747,12 @@ public final class GameManagerService extends IGameManagerService.Stub {
             }
 
             android.app.GameModeConfiguration toPublicGameModeConfig() {
-                int fpsOverride = getFpsInt(mFps);
+                int fpsOverride;
+                try {
+                    fpsOverride = Integer.parseInt(mFps);
+                } catch (NumberFormatException e) {
+                    fpsOverride = 0;
+                }
                 // TODO(b/243448953): match to proper value in case of display change?
                 fpsOverride = fpsOverride > 0 ? fpsOverride
                         : android.app.GameModeConfiguration.FPS_OVERRIDE_NONE;
@@ -1265,6 +1278,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
                 // instruction.
                 mHandler.removeMessages(CANCEL_GAME_LOADING_MODE);
             } else {
+                Slog.v(TAG, "Game loading power mode ON (loading boost on game start)");
                 mPowerManagerInternal.setPowerMode(Mode.GAME_LOADING, true);
             }
 
@@ -1474,6 +1488,43 @@ public final class GameManagerService extends IGameManagerService.Stub {
     }
 
     /**
+     * Adds a game state listener.
+     */
+    @Override
+    public void addGameStateListener(@NonNull IGameStateListener listener) {
+        try {
+            final IBinder listenerBinder = listener.asBinder();
+            listenerBinder.linkToDeath(new DeathRecipient() {
+                @Override public void binderDied() {
+                    removeGameStateListenerUnchecked(listener);
+                    listenerBinder.unlinkToDeath(this, 0 /*flags*/);
+                }
+            }, 0 /*flags*/);
+            synchronized (mGameStateListenerLock) {
+                mGameStateListeners.put(listener, Binder.getCallingUid());
+            }
+        } catch (RemoteException ex) {
+            Slog.e(TAG,
+                    "Failed to link death recipient for IGameStateListener from caller "
+                            + Binder.getCallingUid() + ", abandoned its listener registration", ex);
+        }
+    }
+
+    /**
+     * Removes a game state listener.
+     */
+    @Override
+    public void removeGameStateListener(@NonNull IGameStateListener listener) {
+        removeGameStateListenerUnchecked(listener);
+    }
+
+    private void removeGameStateListenerUnchecked(IGameStateListener listener) {
+        synchronized (mGameStateListenerLock) {
+            mGameStateListeners.remove(listener);
+        }
+    }
+
+    /**
      * Notified when boot is completed.
      */
     @VisibleForTesting
@@ -1504,6 +1555,14 @@ public final class GameManagerService extends IGameManagerService.Stub {
                 }
             }
         }, new IntentFilter(Intent.ACTION_SHUTDOWN));
+        Slog.v(TAG, "Game loading power mode OFF (game manager service start/restart)");
+        mPowerManagerInternal.setPowerMode(Mode.GAME_LOADING, false);
+        Slog.v(TAG, "Game power mode OFF (game manager service start/restart)");
+        mPowerManagerInternal.setPowerMode(Mode.GAME, false);
+
+        mGameDefaultFrameRateValue = (float) mSysProps.getInt(
+                PROPERTY_RO_SURFACEFLINGER_GAME_DEFAULT_FRAME_RATE, 60);
+        Slog.v(TAG, "Game Default Frame Rate : " + mGameDefaultFrameRateValue);
     }
 
     private void sendUserMessage(int userId, int what, String eventForLog, int delayMillis) {
@@ -1571,7 +1630,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
         try {
             final float fps = 0.0f;
             final int uid = mPackageManager.getPackageUidAsUser(packageName, userId);
-            setOverrideFrameRate(uid, fps);
+            setGameModeFrameRateOverride(uid, fps);
         } catch (PackageManager.NameNotFoundException e) {
             return;
         }
@@ -1603,7 +1662,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
         try {
             final float fps = modeConfig.getFps();
             final int uid = mPackageManager.getPackageUidAsUser(packageName, userId);
-            setOverrideFrameRate(uid, fps);
+            setGameModeFrameRateOverride(uid, fps);
         } catch (PackageManager.NameNotFoundException e) {
             return;
         }
@@ -1801,15 +1860,11 @@ public final class GameManagerService extends IGameManagerService.Stub {
                     final GamePackageConfiguration config =
                             new GamePackageConfiguration(mPackageManager, packageName, userId);
                     if (config.isActive()) {
-                        if (DEBUG) {
-                            Slog.i(TAG, "Adding config: " + config.toString());
-                        }
+                        Slog.v(TAG, "Adding config: " + config.toString());
                         mConfigs.put(packageName, config);
                     } else {
-                        if (DEBUG) {
-                            Slog.w(TAG, "Inactive package config for "
+                        Slog.v(TAG, "Inactive package config for "
                                     + config.getPackageName() + ":" + config.toString());
-                        }
                         mConfigs.remove(packageName);
                     }
                 }
@@ -2032,17 +2087,17 @@ public final class GameManagerService extends IGameManagerService.Stub {
         statsManager.setPullAtomCallback(
                 FrameworkStatsLog.GAME_MODE_INFO,
                 null, // use default PullAtomMetadata values
-                BackgroundThread.getExecutor(),
+                DIRECT_EXECUTOR,
                 this::onPullAtom);
         statsManager.setPullAtomCallback(
                 FrameworkStatsLog.GAME_MODE_CONFIGURATION,
                 null, // use default PullAtomMetadata values
-                BackgroundThread.getExecutor(),
+                DIRECT_EXECUTOR,
                 this::onPullAtom);
         statsManager.setPullAtomCallback(
                 FrameworkStatsLog.GAME_MODE_LISTENER,
                 null, // use default PullAtomMetadata values
-                BackgroundThread.getExecutor(),
+                DIRECT_EXECUTOR,
                 this::onPullAtom);
     }
 
@@ -2146,14 +2201,69 @@ public final class GameManagerService extends IGameManagerService.Stub {
     }
 
     @VisibleForTesting
-    void setOverrideFrameRate(int uid, float frameRate) {
-        nativeSetOverrideFrameRate(uid, frameRate);
+    void setGameModeFrameRateOverride(int uid, float frameRate) {
+        nativeSetGameModeFrameRateOverride(uid, frameRate);
+    }
+
+    @VisibleForTesting
+    void setGameDefaultFrameRateOverride(int uid, float frameRate) {
+        Slog.v(TAG, "setDefaultFrameRateOverride : " + uid + " , " + frameRate);
+        nativeSetGameDefaultFrameRateOverride(uid, frameRate);
+    }
+
+    private float getGameDefaultFrameRate() {
+        final boolean isGameDefaultFrameRateEnabled;
+        float gameDefaultFrameRate = 0.0f;
+        synchronized (mLock) {
+            isGameDefaultFrameRateEnabled =
+                    mSysProps.getBoolean(
+                            PROPERTY_PERSISTENT_GFX_GAME_DEFAULT_FRAME_RATE_ENABLED, true);
+        }
+        if (gameDefaultFrameRate()) {
+            gameDefaultFrameRate = isGameDefaultFrameRateEnabled
+                    ? mGameDefaultFrameRateValue : 0.0f;
+        }
+        return gameDefaultFrameRate;
+    }
+
+    @Override
+    @EnforcePermission(Manifest.permission.MANAGE_GAME_MODE)
+    public void toggleGameDefaultFrameRate(boolean isEnabled) {
+        toggleGameDefaultFrameRate_enforcePermission();
+        if (gameDefaultFrameRate()) {
+            Slog.v(TAG, "toggleGameDefaultFrameRate : " + isEnabled);
+            this.toggleGameDefaultFrameRateUnchecked(isEnabled);
+        }
+    }
+
+    private void toggleGameDefaultFrameRateUnchecked(boolean isEnabled) {
+        // Update system properties.
+        // Here we only need to immediately update games that are in the foreground.
+        // We will update game default frame rate when a game comes into foreground in
+        // MyUidObserver.
+        synchronized (mLock) {
+            if (isEnabled) {
+                mSysProps.set(
+                        PROPERTY_PERSISTENT_GFX_GAME_DEFAULT_FRAME_RATE_ENABLED, "true");
+            } else {
+                mSysProps.set(
+                        PROPERTY_PERSISTENT_GFX_GAME_DEFAULT_FRAME_RATE_ENABLED, "false");
+            }
+        }
+
+        // Update all foreground games' frame rate.
+        synchronized (mUidObserverLock) {
+            for (int uid : mForegroundGameUids) {
+                setGameDefaultFrameRateOverride(uid, getGameDefaultFrameRate());
+            }
+        }
     }
 
     /**
      * load dynamic library for frame rate overriding JNI calls
      */
-    private static native void nativeSetOverrideFrameRate(int uid, float frameRate);
+    private static native void nativeSetGameModeFrameRateOverride(int uid, float frameRate);
+    private static native void nativeSetGameDefaultFrameRateOverride(int uid, float frameRate);
 
     final class MyUidObserver extends UidObserver {
         @Override
@@ -2166,7 +2276,8 @@ public final class GameManagerService extends IGameManagerService.Stub {
         @Override
         public void onUidStateChanged(int uid, int procState, long procStateSeq, int capability) {
             synchronized (mUidObserverLock) {
-                if (ActivityManager.isProcStateBackground(procState)) {
+
+                if (procState != ActivityManager.PROCESS_STATE_TOP) {
                     disableGameMode(uid);
                     return;
                 }
@@ -2185,6 +2296,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
                     Slog.v(TAG, "Game power mode ON (process state was changed to foreground)");
                     mPowerManagerInternal.setPowerMode(Mode.GAME, true);
                 }
+                setGameDefaultFrameRateOverride(uid, getGameDefaultFrameRate());
                 mForegroundGameUids.add(uid);
             }
         }

@@ -16,30 +16,35 @@
 
 package com.android.systemui.qs.ui.viewmodel
 
-import com.android.systemui.keyguard.domain.interactor.LockscreenSceneInteractor
-import dagger.assisted.Assisted
-import dagger.assisted.AssistedFactory
-import dagger.assisted.AssistedInject
+import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.qs.ui.adapter.QSSceneAdapter
+import com.android.systemui.scene.shared.model.Direction
+import com.android.systemui.scene.shared.model.SceneKey
+import com.android.systemui.scene.shared.model.SceneModel
+import com.android.systemui.scene.shared.model.UserAction
+import com.android.systemui.shade.ui.viewmodel.ShadeHeaderViewModel
+import com.android.systemui.statusbar.notification.stack.ui.viewmodel.NotificationsPlaceholderViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.map
 
 /** Models UI state and handles user input for the quick settings scene. */
+@SysUISingleton
 class QuickSettingsSceneViewModel
-@AssistedInject
+@Inject
 constructor(
-    lockscreenSceneInteractorFactory: LockscreenSceneInteractor.Factory,
-    @Assisted containerName: String,
+    val shadeHeaderViewModel: ShadeHeaderViewModel,
+    val qsSceneAdapter: QSSceneAdapter,
+    val notifications: NotificationsPlaceholderViewModel,
 ) {
-    private val lockscreenSceneInteractor: LockscreenSceneInteractor =
-        lockscreenSceneInteractorFactory.create(containerName)
-
-    /** Notifies that some content in quick settings was clicked. */
-    fun onContentClicked() {
-        lockscreenSceneInteractor.dismissLockscreen()
-    }
-
-    @AssistedFactory
-    interface Factory {
-        fun create(
-            containerName: String,
-        ): QuickSettingsSceneViewModel
-    }
+    val destinationScenes =
+        qsSceneAdapter.isCustomizing.map { customizing ->
+            if (customizing) {
+                mapOf<UserAction, SceneModel>(UserAction.Back to SceneModel(SceneKey.QuickSettings))
+            } else {
+                mapOf(
+                    UserAction.Back to SceneModel(SceneKey.Shade),
+                    UserAction.Swipe(Direction.UP) to SceneModel(SceneKey.Shade),
+                )
+            }
+        }
 }

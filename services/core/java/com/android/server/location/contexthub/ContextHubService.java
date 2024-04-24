@@ -52,6 +52,7 @@ import android.os.ResultReceiver;
 import android.os.ShellCallback;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.provider.Settings;
 import android.util.Log;
 import android.util.Pair;
@@ -168,6 +169,8 @@ public class ContextHubService extends IContextHubService.Stub {
     private final Object mSendWifiSettingUpdateLock = new Object();
 
     private SensorPrivacyManagerInternal mSensorPrivacyManagerInternal;
+
+    private UserManager mUserManager = null;
 
     private final Map<Integer, AtomicLong> mLastRestartTimestampMap = new HashMap<>();
 
@@ -491,6 +494,14 @@ public class ContextHubService extends IContextHubService.Stub {
             return;
         }
 
+        if (mUserManager == null) {
+            mUserManager = mContext.getSystemService(UserManager.class);
+            if (mUserManager == null) {
+                Log.e(TAG, "Unable to get the UserManager service");
+                return;
+            }
+        }
+
         sendMicrophoneDisableSettingUpdateForCurrentUser();
         if (mSensorPrivacyManagerInternal == null) {
             Log.e(TAG, "Unable to add a sensor privacy listener for all users");
@@ -499,8 +510,9 @@ public class ContextHubService extends IContextHubService.Stub {
 
         mSensorPrivacyManagerInternal.addSensorPrivacyListenerForAllUsers(
                 SensorPrivacyManager.Sensors.MICROPHONE, (userId, enabled) -> {
-                    if (userId == getCurrentUserId()) {
-                        Log.d(TAG, "User: " + userId + "mic privacy: " + enabled);
+                    // If we are in HSUM mode, any user can change the microphone setting
+                    if (mUserManager.isHeadlessSystemUserMode() || userId == getCurrentUserId()) {
+                        Log.d(TAG, "User: " + userId + " mic privacy: " + enabled);
                         sendMicrophoneDisableSettingUpdate(enabled);
                     }
                 });
@@ -1419,13 +1431,17 @@ public class ContextHubService extends IContextHubService.Stub {
                 mContextHubWrapper.onBtMainSettingChanged(btEnabled);
             }
         } else {
-            Log.d(TAG, "BT adapter not available. Defaulting to disabled");
-            if (forceUpdate || mIsBtMainEnabled) {
-                mIsBtMainEnabled = false;
+            Log.d(TAG, "BT adapter not available. Getting permissions from user settings");
+            boolean btEnabled = Settings.Global.getInt(mContext.getContentResolver(),
+                    Settings.Global.BLUETOOTH_ON, 0) == 1;
+            boolean btScanEnabled = Settings.Global.getInt(mContext.getContentResolver(),
+                    Settings.Global.BLE_SCAN_ALWAYS_AVAILABLE, 0) == 1;
+            if (forceUpdate || mIsBtMainEnabled != btEnabled) {
+                mIsBtMainEnabled = btEnabled;
                 mContextHubWrapper.onBtMainSettingChanged(mIsBtMainEnabled);
             }
-            if (forceUpdate || mIsBtScanningEnabled) {
-                mIsBtScanningEnabled = false;
+            if (forceUpdate || mIsBtScanningEnabled != btScanEnabled) {
+                mIsBtScanningEnabled = btScanEnabled;
                 mContextHubWrapper.onBtScanningSettingChanged(mIsBtScanningEnabled);
             }
         }

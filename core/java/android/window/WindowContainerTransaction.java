@@ -688,6 +688,7 @@ public final class WindowContainerTransaction implements Parcelable {
                         .setInsetsFrameProvider(new InsetsFrameProvider(owner, index, type)
                                 .setSource(InsetsFrameProvider.SOURCE_ARBITRARY_RECTANGLE)
                                 .setArbitraryRectangle(frame))
+                        .setInsetsFrameOwner(owner)
                         .build();
         mHierarchyOps.add(hierarchyOp);
         return this;
@@ -712,6 +713,7 @@ public final class WindowContainerTransaction implements Parcelable {
                 new HierarchyOp.Builder(HierarchyOp.HIERARCHY_OP_TYPE_REMOVE_INSETS_FRAME_PROVIDER)
                         .setContainer(receiver.asBinder())
                         .setInsetsFrameProvider(new InsetsFrameProvider(owner, index, type))
+                        .setInsetsFrameOwner(owner)
                         .build();
         mHierarchyOps.add(hierarchyOp);
         return this;
@@ -802,7 +804,7 @@ public final class WindowContainerTransaction implements Parcelable {
      * Sets/removes the always on top flag for this {@code windowContainer}. See
      * {@link com.android.server.wm.ConfigurationContainer#setAlwaysOnTop(boolean)}.
      * Please note that this method is only intended to be used for a
-     * {@link com.android.server.wm.DisplayArea}.
+     * {@link com.android.server.wm.Task} or {@link com.android.server.wm.DisplayArea}.
      *
      * <p>
      *     Setting always on top to {@code True} will also make the {@code windowContainer} to move
@@ -891,6 +893,23 @@ public final class WindowContainerTransaction implements Parcelable {
                         .setReparentLeafTaskIfRelaunch(reparentLeafTaskIfRelaunch)
                         .build();
         mHierarchyOps.add(hierarchyOp);
+        return this;
+    }
+
+    /**
+     * Moves the PiP activity of a parent task to a pinned root task.
+     * @param parentToken the parent task of the PiP activity
+     * @param bounds the entry bounds
+     * @hide
+     */
+    @NonNull
+    public WindowContainerTransaction movePipActivityToPinnedRootTask(
+            @NonNull WindowContainerToken parentToken, @NonNull Rect bounds) {
+        mHierarchyOps.add(new HierarchyOp
+                .Builder(HierarchyOp.HIERARCHY_OP_TYPE_MOVE_PIP_ACTIVITY_TO_PINNED_TASK)
+                .setContainer(parentToken.asBinder())
+                .setBounds(bounds)
+                .build());
         return this;
     }
 
@@ -1325,6 +1344,7 @@ public final class WindowContainerTransaction implements Parcelable {
         public static final int HIERARCHY_OP_TYPE_CLEAR_ADJACENT_ROOTS = 15;
         public static final int HIERARCHY_OP_TYPE_SET_REPARENT_LEAF_TASK_IF_RELAUNCH = 16;
         public static final int HIERARCHY_OP_TYPE_ADD_TASK_FRAGMENT_OPERATION = 17;
+        public static final int HIERARCHY_OP_TYPE_MOVE_PIP_ACTIVITY_TO_PINNED_TASK = 18;
 
         // The following key(s) are for use with mLaunchOptions:
         // When launching a task (eg. from recents), this is the taskId to be launched.
@@ -1344,7 +1364,11 @@ public final class WindowContainerTransaction implements Parcelable {
         @Nullable
         private IBinder mReparent;
 
+        @Nullable
         private InsetsFrameProvider mInsetsFrameProvider;
+
+        @Nullable
+        private IBinder mInsetsFrameOwner;
 
         // Moves/reparents to top of parent when {@code true}, otherwise moves/reparents to bottom.
         private boolean mToTop;
@@ -1372,6 +1396,9 @@ public final class WindowContainerTransaction implements Parcelable {
 
         @Nullable
         private ShortcutInfo mShortcutInfo;
+
+        @Nullable
+        private Rect mBounds;
 
         private boolean mAlwaysOnTop;
 
@@ -1476,8 +1503,10 @@ public final class WindowContainerTransaction implements Parcelable {
         public HierarchyOp(@NonNull HierarchyOp copy) {
             mType = copy.mType;
             mContainer = copy.mContainer;
+            mBounds = copy.mBounds;
             mReparent = copy.mReparent;
             mInsetsFrameProvider = copy.mInsetsFrameProvider;
+            mInsetsFrameOwner = copy.mInsetsFrameOwner;
             mToTop = copy.mToTop;
             mReparentTopOnly = copy.mReparentTopOnly;
             mWindowingModes = copy.mWindowingModes;
@@ -1494,8 +1523,10 @@ public final class WindowContainerTransaction implements Parcelable {
         protected HierarchyOp(Parcel in) {
             mType = in.readInt();
             mContainer = in.readStrongBinder();
+            mBounds = in.readTypedObject(Rect.CREATOR);
             mReparent = in.readStrongBinder();
             mInsetsFrameProvider = in.readTypedObject(InsetsFrameProvider.CREATOR);
+            mInsetsFrameOwner = in.readStrongBinder();
             mToTop = in.readBoolean();
             mReparentTopOnly = in.readBoolean();
             mWindowingModes = in.createIntArray();
@@ -1525,6 +1556,11 @@ public final class WindowContainerTransaction implements Parcelable {
         @Nullable
         public InsetsFrameProvider getInsetsFrameProvider() {
             return mInsetsFrameProvider;
+        }
+
+        @Nullable
+        public IBinder getInsetsFrameOwner() {
+            return mInsetsFrameOwner;
         }
 
         @NonNull
@@ -1584,6 +1620,11 @@ public final class WindowContainerTransaction implements Parcelable {
         @Nullable
         public ShortcutInfo getShortcutInfo() {
             return mShortcutInfo;
+        }
+
+        @NonNull
+        public Rect getBounds() {
+            return mBounds;
         }
 
         /** Gets a string representation of a hierarchy-op type. */
@@ -1657,7 +1698,8 @@ public final class WindowContainerTransaction implements Parcelable {
                 case HIERARCHY_OP_TYPE_ADD_INSETS_FRAME_PROVIDER:
                 case HIERARCHY_OP_TYPE_REMOVE_INSETS_FRAME_PROVIDER:
                     sb.append("container=").append(mContainer)
-                            .append(" provider=").append(mInsetsFrameProvider);
+                            .append(" provider=").append(mInsetsFrameProvider)
+                            .append(" owner=").append(mInsetsFrameOwner);
                     break;
                 case HIERARCHY_OP_TYPE_SET_ALWAYS_ON_TOP:
                     sb.append("container=").append(mContainer)
@@ -1695,8 +1737,10 @@ public final class WindowContainerTransaction implements Parcelable {
         public void writeToParcel(Parcel dest, int flags) {
             dest.writeInt(mType);
             dest.writeStrongBinder(mContainer);
+            dest.writeTypedObject(mBounds, flags);
             dest.writeStrongBinder(mReparent);
             dest.writeTypedObject(mInsetsFrameProvider, flags);
+            dest.writeStrongBinder(mInsetsFrameOwner);
             dest.writeBoolean(mToTop);
             dest.writeBoolean(mReparentTopOnly);
             dest.writeIntArray(mWindowingModes);
@@ -1737,7 +1781,11 @@ public final class WindowContainerTransaction implements Parcelable {
             @Nullable
             private IBinder mReparent;
 
+            @Nullable
             private InsetsFrameProvider mInsetsFrameProvider;
+
+            @Nullable
+            private IBinder mInsetsFrameOwner;
 
             private boolean mToTop;
 
@@ -1764,6 +1812,9 @@ public final class WindowContainerTransaction implements Parcelable {
             @Nullable
             private ShortcutInfo mShortcutInfo;
 
+            @Nullable
+            private Rect mBounds;
+
             private boolean mAlwaysOnTop;
 
             private boolean mReparentLeafTaskIfRelaunch;
@@ -1782,8 +1833,13 @@ public final class WindowContainerTransaction implements Parcelable {
                 return this;
             }
 
-            Builder setInsetsFrameProvider(InsetsFrameProvider providers) {
-                mInsetsFrameProvider = providers;
+            Builder setInsetsFrameProvider(InsetsFrameProvider provider) {
+                mInsetsFrameProvider = provider;
+                return this;
+            }
+
+            Builder setInsetsFrameOwner(IBinder owner) {
+                mInsetsFrameOwner = owner;
                 return this;
             }
 
@@ -1843,6 +1899,11 @@ public final class WindowContainerTransaction implements Parcelable {
                 return this;
             }
 
+            Builder setBounds(@NonNull Rect bounds) {
+                mBounds = bounds;
+                return this;
+            }
+
             HierarchyOp build() {
                 final HierarchyOp hierarchyOp = new HierarchyOp(mType);
                 hierarchyOp.mContainer = mContainer;
@@ -1854,6 +1915,7 @@ public final class WindowContainerTransaction implements Parcelable {
                         ? Arrays.copyOf(mActivityTypes, mActivityTypes.length)
                         : null;
                 hierarchyOp.mInsetsFrameProvider = mInsetsFrameProvider;
+                hierarchyOp.mInsetsFrameOwner = mInsetsFrameOwner;
                 hierarchyOp.mToTop = mToTop;
                 hierarchyOp.mReparentTopOnly = mReparentTopOnly;
                 hierarchyOp.mLaunchOptions = mLaunchOptions;
@@ -1862,6 +1924,7 @@ public final class WindowContainerTransaction implements Parcelable {
                 hierarchyOp.mAlwaysOnTop = mAlwaysOnTop;
                 hierarchyOp.mTaskFragmentOperation = mTaskFragmentOperation;
                 hierarchyOp.mShortcutInfo = mShortcutInfo;
+                hierarchyOp.mBounds = mBounds;
                 hierarchyOp.mReparentLeafTaskIfRelaunch = mReparentLeafTaskIfRelaunch;
 
                 return hierarchyOp;

@@ -37,6 +37,7 @@ import android.view.SurfaceControl;
 import android.view.ThreadedRenderer;
 import android.view.View;
 
+import com.android.systemui.res.R;
 import com.android.internal.protolog.common.ProtoLog;
 import com.android.systemui.dagger.GlobalRootComponent;
 import com.android.systemui.dagger.SysUIComponent;
@@ -54,7 +55,7 @@ import javax.inject.Provider;
  * Application class for SystemUI.
  */
 public class SystemUIApplication extends Application implements
-        SystemUIAppComponentFactory.ContextInitializer {
+        SystemUIAppComponentFactoryBase.ContextInitializer {
 
     public static final String TAG = "SystemUIService";
     private static final boolean DEBUG = false;
@@ -66,7 +67,7 @@ public class SystemUIApplication extends Application implements
      */
     private CoreStartable[] mServices;
     private boolean mServicesStarted;
-    private SystemUIAppComponentFactory.ContextAvailableCallback mContextAvailableCallback;
+    private SystemUIAppComponentFactoryBase.ContextAvailableCallback mContextAvailableCallback;
     private SysUIComponent mSysUIComponent;
     private SystemUIInitializer mInitializer;
 
@@ -108,6 +109,10 @@ public class SystemUIApplication extends Application implements
                 SystemProperties.getBoolean("persist.debug.trace_layouts", false));
         View.setTracedRequestLayoutClassClass(
                 SystemProperties.get("persist.debug.trace_request_layout_class", null));
+
+        if (Flags.enableLayoutTracing()) {
+            View.setTraceLayoutSteps(true);
+        }
 
         if (Process.myUserHandle().equals(UserHandle.SYSTEM)) {
             IntentFilter bootCompletedFilter = new
@@ -254,11 +259,16 @@ public class SystemUIApplication extends Application implements
         }
 
         for (i = 0; i < mServices.length; i++) {
+            final CoreStartable service = mServices[i];
             if (mBootCompleteCache.isBootComplete()) {
-                notifyBootCompleted(mServices[i]);
+                notifyBootCompleted(service);
             }
 
-            dumpManager.registerDumpable(mServices[i].getClass().getName(), mServices[i]);
+            if (service.isDumpCritical()) {
+                dumpManager.registerCriticalDumpable(service);
+            } else {
+                dumpManager.registerNormalDumpable(service);
+            }
         }
         mSysUIComponent.getInitController().executePostInitTasks();
         log.traceEnd();
@@ -366,7 +376,7 @@ public class SystemUIApplication extends Application implements
 
     @Override
     public void setContextAvailableCallback(
-            SystemUIAppComponentFactory.ContextAvailableCallback callback) {
+            SystemUIAppComponentFactoryBase.ContextAvailableCallback callback) {
         mContextAvailableCallback = callback;
     }
 

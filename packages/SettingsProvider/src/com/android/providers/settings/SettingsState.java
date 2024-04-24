@@ -72,6 +72,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * This class contains the state for one type of settings. It is responsible
@@ -94,6 +95,9 @@ final class SettingsState {
 
     static final int SETTINGS_VERSION_NEW_ENCODING = 121;
 
+    // LINT.IfChange
+    public static final int MAX_LENGTH_PER_STRING = 32768;
+    // LINT.ThenChange(/services/core/java/com/android/server/audio/AudioDeviceInventory.java:settings_max_length_per_string)
     private static final long WRITE_SETTINGS_DELAY_MILLIS = 200;
     private static final long MAX_WRITE_SETTINGS_DELAY_MILLIS = 2000;
 
@@ -135,6 +139,13 @@ final class SettingsState {
      */
     private static final String ATTR_VALUE_BASE64 = "valueBase64";
     private static final String ATTR_DEFAULT_VALUE_BASE64 = "defaultValueBase64";
+
+    /**
+     * In the config table, there are special flags of the form {@code staged/namespace*flagName}.
+     * On boot, when the XML file is initially parsed, these transform into
+     * {@code namespace/flagName}, and the special staged flags are deleted.
+     */
+    private static final String CONFIG_STAGED_PREFIX = "staged/";
 
     // This was used in version 120 and before.
     private static final String NULL_VALUE_OLD_STYLE = "null";
@@ -430,6 +441,19 @@ final class SettingsState {
             return false;
         }
 
+        final boolean isNameTooLong = name.length() > SettingsState.MAX_LENGTH_PER_STRING;
+        final boolean isValueTooLong =
+                value != null && value.length() > SettingsState.MAX_LENGTH_PER_STRING;
+        if (isNameTooLong || isValueTooLong) {
+            // only print the first few bytes of the name in case it is long
+            final String errorMessage = "The " + (isNameTooLong ? "name" : "value")
+                    + " of your setting ["
+                    + (name.length() > 20 ? (name.substring(0, 20) + "...") : name)
+                    + "] is too long. The max length allowed for the string is "
+                    + MAX_LENGTH_PER_STRING + ".";
+            throw new IllegalArgumentException(errorMessage);
+        }
+
         Setting oldState = mSettings.get(name);
         String oldValue = (oldState != null) ? oldState.value : null;
         String oldDefaultValue = (oldState != null) ? oldState.defaultValue : null;
@@ -568,9 +592,10 @@ final class SettingsState {
     }
 
     // The settings provider must hold its lock when calling here.
-    public void persistSyncLocked() {
+    public void persistSettingsLocked() {
         mHandler.removeMessages(MyHandler.MSG_PERSIST_SETTINGS);
-        doWriteState();
+        // schedule a write operation right away
+        mHandler.obtainMessage(MyHandler.MSG_PERSIST_SETTINGS).sendToTarget();
     }
 
     // The settings provider must hold its lock when calling here.
@@ -831,6 +856,7 @@ final class SettingsState {
 
     private void doWriteState() {
         boolean wroteState = false;
+        String settingFailedToBePersisted = null;
         final int version;
         final ArrayMap<String, Setting> settings;
         final ArrayMap<String, String> namespaceBannedHashes;
@@ -860,7 +886,6 @@ final class SettingsState {
 
                 final int settingCount = settings.size();
                 for (int i = 0; i < settingCount; i++) {
-
                     Setting setting = settings.valueAt(i);
                     if (setting.isTransient()) {
                         if (DEBUG_PERSISTENCE) {
@@ -869,14 +894,27 @@ final class SettingsState {
                         continue;
                     }
 
-                    if (writeSingleSetting(mVersion, serializer, setting.getId(), setting.getName(),
-                            setting.getValue(), setting.getDefaultValue(), setting.getPackageName(),
-                            setting.getTag(), setting.isDefaultFromSystem(),
-                            setting.isValuePreservedInRestore())) {
-                        if (DEBUG_PERSISTENCE) {
-                            Slog.i(LOG_TAG, "[PERSISTED]" + setting.getName() + "="
-                                    + setting.getValue());
+                    try {
+                        if (writeSingleSetting(mVersion, serializer, setting.getId(),
+                                setting.getName(),
+                                setting.getValue(), setting.getDefaultValue(),
+                                setting.getPackageName(),
+                                setting.getTag(), setting.isDefaultFromSystem(),
+                                setting.isValuePreservedInRestore())) {
+                            if (DEBUG_PERSISTENCE) {
+                                Slog.i(LOG_TAG, "[PERSISTED]" + setting.getName() + "="
+                                        + setting.getValue());
+                            }
                         }
+                    } catch (IOException ex) {
+                        Slog.e(LOG_TAG, "[ABORT PERSISTING]" + setting.getName()
+                                + " due to error writing to disk", ex);
+                        // A setting failed to be written. Abort the serialization to avoid leaving
+                        // a partially serialized setting on disk, which can cause parsing errors.
+                        // Note down the problematic setting, so that we can delete it before trying
+                        // again to persist the rest of the settings.
+                        settingFailedToBePersisted = setting.getName();
+                        throw ex;
                     }
                 }
                 serializer.endTag(null, TAG_SETTINGS);
@@ -902,14 +940,14 @@ final class SettingsState {
                     Slog.i(LOG_TAG, "[PERSIST END]");
                 }
             } catch (Throwable t) {
-                Slog.wtf(LOG_TAG, "Failed to write settings, restoring backup", t);
+                Slog.wtf(LOG_TAG, "Failed to write settings, restoring old file", t);
                 if (t instanceof IOException) {
-                    if (DEBUG) {
-                        // we failed to create a directory, so log the permissions and existence
-                        // state for the settings file and directory
-                        logSettingsDirectoryInformation(destination.getBaseFile());
-                    }
                     if (t.getMessage().contains("Couldn't create directory")) {
+                        if (DEBUG) {
+                            // we failed to create a directory, so log the permissions and existence
+                            // state for the settings file and directory
+                            logSettingsDirectoryInformation(destination.getBaseFile());
+                        }
                         // attempt to create the directory with Files.createDirectories, which
                         // throws more informative errors than File.mkdirs.
                         Path parentPath = destination.getBaseFile().getParentFile().toPath();
@@ -930,7 +968,15 @@ final class SettingsState {
             }
         }
 
-        if (wroteState) {
+        if (!wroteState) {
+            if (settingFailedToBePersisted != null) {
+                synchronized (mLock) {
+                    // Delete the problematic setting. This will schedule a write as well.
+                    deleteSettingLocked(settingFailedToBePersisted);
+                }
+            }
+        } else {
+            // success
             synchronized (mLock) {
                 addHistoricalOperationLocked(HISTORICAL_OPERATION_PERSIST, null);
             }
@@ -1090,7 +1136,10 @@ final class SettingsState {
         } catch (FileNotFoundException fnfe) {
             final String message = "No fallback file found for: " + mStatePersistFile;
             Slog.wtf(LOG_TAG, message);
-            throw new IllegalStateException(message);
+            if (!isConfigSettingsKey(mKey)) {
+                // Allow partially deserialized config settings because they can be updated later
+                throw new IllegalStateException(message);
+            }
         }
         if (parseStateFromXmlStreamLocked(in)) {
             // Parsed state from fallback file. Restore original file with fallback file
@@ -1102,7 +1151,10 @@ final class SettingsState {
         } else {
             final String message = "Failed parsing settings file: " + mStatePersistFile;
             Slog.wtf(LOG_TAG, message);
-            throw new IllegalStateException(message);
+            if (!isConfigSettingsKey(mKey)) {
+                // Allow partially deserialized config settings because they can be updated later
+                throw new IllegalStateException(message);
+            }
         }
     }
 
@@ -1150,6 +1202,42 @@ final class SettingsState {
         }
     }
 
+    /**
+     * Transforms a staged flag name to its real flag name.
+     *
+     * Staged flags take the form {@code staged/namespace*flagName}. If
+     * {@code stagedFlagName} takes the proper form, returns
+     * {@code namespace/flagName}. Otherwise, returns {@code stagedFlagName}
+     * unmodified, and logs an error message.
+     *
+     */
+    @VisibleForTesting
+    public static String createRealFlagName(String stagedFlagName) {
+        int slashIndex = stagedFlagName.indexOf("/");
+        if (slashIndex == -1 || slashIndex == stagedFlagName.length() - 1
+                || slashIndex == 0) {
+            Slog.w(LOG_TAG, "invalid staged flag, not applying: " + stagedFlagName);
+            return stagedFlagName;
+        }
+
+        String namespaceAndFlag =
+                stagedFlagName.substring(slashIndex + 1);
+
+        int starIndex = namespaceAndFlag.indexOf("*");
+        if (starIndex == -1 || starIndex == namespaceAndFlag.length() - 1
+                || starIndex == 0) {
+            Slog.w(LOG_TAG, "invalid staged flag, not applying: " + stagedFlagName);
+            return stagedFlagName;
+        }
+
+        String namespace =
+                namespaceAndFlag.substring(0, starIndex);
+        String flagName =
+                namespaceAndFlag.substring(starIndex + 1);
+
+        return namespace + "/" + flagName;
+    }
+
     @GuardedBy("mLock")
     private void parseSettingsLocked(TypedXmlPullParser parser)
             throws IOException, XmlPullParserException {
@@ -1158,6 +1246,7 @@ final class SettingsState {
 
         final int outerDepth = parser.getDepth();
         int type;
+        HashSet<String> flagsWithStagedValueApplied = new HashSet<String>();
         while ((type = parser.next()) != XmlPullParser.END_DOCUMENT
                 && (type != XmlPullParser.END_TAG || parser.getDepth() > outerDepth)) {
             if (type == XmlPullParser.END_TAG || type == XmlPullParser.TEXT) {
@@ -1180,6 +1269,18 @@ final class SettingsState {
                     fromSystem = parser.getAttributeBoolean(null, ATTR_DEFAULT_SYS_SET, false);
                     tag = getValueAttribute(parser, ATTR_TAG, ATTR_TAG_BASE64);
                 }
+
+                if (isConfigSettingsKey(mKey)) {
+                    if (flagsWithStagedValueApplied.contains(name)) {
+                        continue;
+                    }
+
+                    if (name.startsWith(CONFIG_STAGED_PREFIX)) {
+                        name = createRealFlagName(name);
+                        flagsWithStagedValueApplied.add(name);
+                    }
+                }
+
                 mSettings.put(name, new Setting(name, value, defaultValue, packageName, tag,
                         fromSystem, id, isPreservedInRestore));
 
@@ -1187,6 +1288,16 @@ final class SettingsState {
                     Slog.i(LOG_TAG, "[RESTORED] " + name + "=" + value);
                 }
             }
+        }
+
+        if (isConfigSettingsKey(mKey) && !flagsWithStagedValueApplied.isEmpty()) {
+            // On boot, the config table XML file includes special staged flags. On the initial
+            // boot XML -> HashMap parse, these staged flags get transformed into real flags.
+            // After this, the HashMap contains no special staged flags (only the transformed
+            // real flags), but the XML still does. We then have no need for the special staged
+            // flags in the XML, so we overwrite the XML with the latest contents of the
+            // HashMap.
+            writeStateAsyncLocked();
         }
     }
 
@@ -1616,6 +1727,22 @@ final class SettingsState {
     public int getMemoryUsage(String packageName) {
         synchronized (mLock) {
             return mPackageToMemoryUsage.getOrDefault(packageName, 0);
+        }
+    }
+
+    /**
+     * Allow tests to wait for the handler to finish handling all the remaining messages
+     */
+    @VisibleForTesting
+    public void waitForHandler() {
+        final CountDownLatch latch = new CountDownLatch(1);
+        synchronized (mLock) {
+            mHandler.post(latch::countDown);
+        }
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            // ignored
         }
     }
 }

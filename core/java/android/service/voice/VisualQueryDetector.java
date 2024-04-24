@@ -25,6 +25,7 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
+import android.content.Context;
 import android.hardware.soundtrigger.SoundTrigger;
 import android.media.AudioFormat;
 import android.os.Binder;
@@ -37,7 +38,10 @@ import android.util.Slog;
 
 import com.android.internal.app.IHotwordRecognitionStatusCallback;
 import com.android.internal.app.IVoiceInteractionManagerService;
+import com.android.internal.infra.AndroidFuture;
 
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.PrintWriter;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -58,17 +62,21 @@ public class VisualQueryDetector {
 
     private final Callback mCallback;
     private final Executor mExecutor;
+    private final Context mContext;
     private final IVoiceInteractionManagerService mManagerService;
     private final VisualQueryDetectorInitializationDelegate mInitializationDelegate;
+    private final String mAttributionTag;
 
     VisualQueryDetector(
             IVoiceInteractionManagerService managerService,
-            @NonNull @CallbackExecutor Executor executor,
-            Callback callback) {
+            @NonNull @CallbackExecutor Executor executor, Callback callback, Context context,
+            @Nullable String attributionTag) {
         mManagerService = managerService;
         mCallback = callback;
         mExecutor = executor;
         mInitializationDelegate = new VisualQueryDetectorInitializationDelegate();
+        mContext = context;
+        mAttributionTag = attributionTag;
     }
 
     /**
@@ -245,8 +253,8 @@ public class VisualQueryDetector {
         @Override
         void initialize(@Nullable PersistableBundle options, @Nullable SharedMemory sharedMemory) {
             initAndVerifyDetector(options, sharedMemory,
-                    new InitializationStateListener(mExecutor, mCallback),
-                    DETECTOR_TYPE_VISUAL_QUERY_DETECTOR);
+                    new InitializationStateListener(mExecutor, mCallback, mContext),
+                    DETECTOR_TYPE_VISUAL_QUERY_DETECTOR, mAttributionTag);
         }
 
         @Override
@@ -330,9 +338,12 @@ public class VisualQueryDetector {
         private final Executor mExecutor;
         private final Callback mCallback;
 
-        InitializationStateListener(Executor executor, Callback callback) {
+        private final Context mContext;
+
+        InitializationStateListener(Executor executor, Callback callback, Context context) {
             this.mExecutor = executor;
             this.mCallback = callback;
+            this.mContext = context;
         }
 
         @Override
@@ -356,6 +367,12 @@ public class VisualQueryDetector {
         public void onRejected(HotwordRejectedResult result) throws RemoteException {
             if (DEBUG) {
                 Slog.i(TAG, "Ignored #onRejected event");
+            }
+        }
+        @Override
+        public void onTrainingData(HotwordTrainingData data) throws RemoteException {
+            if (DEBUG) {
+                Slog.i(TAG, "Ignored #onTrainingData event");
             }
         }
 
@@ -424,6 +441,23 @@ public class VisualQueryDetector {
             Binder.withCleanCallingIdentity(() -> mExecutor.execute(() -> {
                 mCallback.onUnknownFailure(
                         !TextUtils.isEmpty(errorMessage) ? errorMessage : "Error data is null");
+            }));
+        }
+        @Override
+        public void onOpenFile(String filename, AndroidFuture future) throws RemoteException {
+            Slog.v(TAG, "BinderCallback#onOpenFile " + filename);
+            Binder.withCleanCallingIdentity(() -> mExecutor.execute(() -> {
+                Slog.v(TAG, "onOpenFile: " + filename + "under internal app storage.");
+                File f = new File(mContext.getFilesDir(), filename);
+                ParcelFileDescriptor pfd = null;
+                try {
+                    pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
+                    Slog.d(TAG, "Successfully opened a file with ParcelFileDescriptor.");
+                } catch (FileNotFoundException e) {
+                    Slog.e(TAG, "Cannot open file. No ParcelFileDescriptor returned.");
+                } finally {
+                    future.complete(pfd);
+                }
             }));
         }
     }

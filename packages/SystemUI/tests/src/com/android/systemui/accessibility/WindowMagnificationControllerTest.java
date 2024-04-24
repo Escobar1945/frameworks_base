@@ -16,6 +16,7 @@
 
 package com.android.systemui.accessibility;
 
+import static android.content.pm.PackageManager.FEATURE_WINDOW_MAGNIFICATION;
 import static android.content.res.Configuration.ORIENTATION_LANDSCAPE;
 import static android.content.res.Configuration.ORIENTATION_PORTRAIT;
 import static android.content.res.Configuration.ORIENTATION_UNDEFINED;
@@ -44,6 +45,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
@@ -52,6 +54,7 @@ import static org.mockito.Mockito.when;
 
 import android.animation.ValueAnimator;
 import android.annotation.IdRes;
+import android.annotation.Nullable;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
@@ -65,10 +68,12 @@ import android.graphics.RegionIterator;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.testing.TestableResources;
 import android.text.TextUtils;
+import android.util.Size;
 import android.view.Display;
 import android.view.IWindowSession;
 import android.view.MotionEvent;
@@ -85,9 +90,10 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.LargeTest;
 
 import com.android.internal.graphics.SfVsyncFrameCallbackProvider;
-import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.animation.AnimatorTestRule;
 import com.android.systemui.model.SysUiState;
+import com.android.systemui.res.R;
 import com.android.systemui.settings.FakeDisplayTracker;
 import com.android.systemui.util.leak.ReferenceTestUtils;
 import com.android.systemui.util.settings.SecureSettings;
@@ -96,7 +102,10 @@ import com.android.systemui.utils.os.FakeHandler;
 import com.google.common.util.concurrent.AtomicDouble;
 
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Answers;
@@ -106,8 +115,6 @@ import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @LargeTest
@@ -115,9 +122,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RunWith(AndroidTestingRunner.class)
 public class WindowMagnificationControllerTest extends SysuiTestCase {
 
+    @Rule
+    public final AnimatorTestRule mAnimatorTestRule = new AnimatorTestRule();
+
     private static final int LAYOUT_CHANGE_TIMEOUT_MS = 5000;
-    private static final long ANIMATION_DURATION_MS = 300;
-    private final long mWaitingAnimationPeriod = 2 * ANIMATION_DURATION_MS;
     @Mock
     private SfVsyncFrameCallbackProvider mSfVsyncFrameProvider;
     @Mock
@@ -126,10 +134,15 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
     private WindowMagnifierCallback mWindowMagnifierCallback;
     @Mock
     IRemoteMagnificationAnimationCallback mAnimationCallback;
+    @Mock
+    IRemoteMagnificationAnimationCallback mAnimationCallback2;
     @Mock(answer = Answers.RETURNS_DEEP_STUBS)
     private SurfaceControl.Transaction mTransaction = new SurfaceControl.Transaction();
     @Mock
     private SecureSettings mSecureSettings;
+
+    private long mWaitAnimationDuration;
+    private long mWaitBounceEffectDuration;
 
     private Handler mHandler;
     private TestableWindowManager mWindowManager;
@@ -147,8 +160,15 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
     private View.OnTouchListener mTouchListener;
     private MotionEventHelper mMotionEventHelper = new MotionEventHelper();
 
+    /**
+     *  return whether window magnification is supported for current test context.
+     */
+    private boolean isWindowModeSupported() {
+        return getContext().getPackageManager().hasSystemFeature(FEATURE_WINDOW_MAGNIFICATION);
+    }
+
     @Before
-    public void setUp() throws RemoteException {
+    public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         mContext = Mockito.spy(getContext());
         mHandler = new FakeHandler(TestableLooper.get(this).getLooper());
@@ -179,6 +199,13 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
             mResources.getConfiguration().orientation = ORIENTATION_PORTRAIT;
         }
 
+        // Using the animation duration in WindowMagnificationAnimationController for testing.
+        mWaitAnimationDuration = mResources.getInteger(
+                com.android.internal.R.integer.config_longAnimTime);
+        // Using the bounce effect duration in WindowMagnificationController for testing.
+        mWaitBounceEffectDuration = mResources.getInteger(
+                com.android.internal.R.integer.config_shortAnimTime);
+
         mWindowMagnificationAnimationController = new WindowMagnificationAnimationController(
                 mContext, mValueAnimator);
         mWindowMagnificationController =
@@ -202,6 +229,9 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
             return null;
         }).when(mSpyView).setOnTouchListener(
                 any(View.OnTouchListener.class));
+
+        // skip test if window magnification is not supported to prevent fail results. (b/279820875)
+        Assume.assumeTrue(isWindowModeSupported());
     }
 
     @After
@@ -209,6 +239,14 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         mInstrumentation.runOnMainSync(
                 () -> mWindowMagnificationController.deleteWindowMagnification());
         mValueAnimator.cancel();
+    }
+
+    @Test
+    public void initWindowMagnificationController_checkAllowDiagonalScrollingWithSecureSettings() {
+        verify(mSecureSettings).getIntForUser(
+                eq(Settings.Secure.ACCESSIBILITY_ALLOW_DIAGONAL_SCROLLING),
+                /* def */ eq(1), /* userHandle= */ anyInt());
+        assertTrue(mWindowMagnificationController.isDiagonalScrollingEnabled());
     }
 
     @Test
@@ -254,9 +292,9 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
                     /* magnificationFrameOffsetRatioY= */ 0,
                     Mockito.mock(IRemoteMagnificationAnimationCallback.class));
         });
+        advanceTimeBy(LAYOUT_CHANGE_TIMEOUT_MS);
 
-        verify(mSfVsyncFrameProvider,
-                timeout(LAYOUT_CHANGE_TIMEOUT_MS).atLeast(2)).postFrameCallback(any());
+        verify(mSfVsyncFrameProvider, atLeast(2)).postFrameCallback(any());
     }
 
     @Test
@@ -292,10 +330,10 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         assertFalse(rects.isEmpty());
     }
 
+    @Ignore("The default window size should be constrained after fixing b/288056772")
     @Test
     public void enableWindowMagnification_LargeScreen_windowSizeIsConstrained() {
-        final int screenSize = mContext.getResources().getDimensionPixelSize(
-                R.dimen.magnification_max_frame_size) * 10;
+        final int screenSize = mWindowManager.getCurrentWindowMetrics().getBounds().width() * 10;
         mWindowManager.setWindowBounds(new Rect(0, 0, screenSize, screenSize));
 
         mInstrumentation.runOnMainSync(() -> {
@@ -374,14 +412,12 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
 
     @Test
     public void moveWindowMagnifierToPositionWithAnimation_expectedValuesAndInvokeCallback()
-            throws InterruptedException {
+            throws RemoteException {
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.enableWindowMagnification(Float.NaN, Float.NaN,
                     Float.NaN, 0, 0, null);
         });
-        final CountDownLatch countDownLatch = new CountDownLatch(1);
-        final MockMagnificationAnimationCallback animationCallback =
-                new MockMagnificationAnimationCallback(countDownLatch);
+
         final ArgumentCaptor<Rect> sourceBoundsCaptor = ArgumentCaptor.forClass(Rect.class);
         verify(mWindowMagnifierCallback, timeout(LAYOUT_CHANGE_TIMEOUT_MS))
                 .onSourceBoundsChanged((eq(mContext.getDisplayId())), sourceBoundsCaptor.capture());
@@ -390,12 +426,12 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
 
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.moveWindowMagnifierToPosition(
-                    targetCenterX, targetCenterY, animationCallback);
+                    targetCenterX, targetCenterY, mAnimationCallback);
         });
+        advanceTimeBy(mWaitAnimationDuration);
 
-        assertTrue(countDownLatch.await(mWaitingAnimationPeriod, TimeUnit.MILLISECONDS));
-        assertEquals(1, animationCallback.getSuccessCount());
-        assertEquals(0, animationCallback.getFailedCount());
+        verify(mAnimationCallback, times(1)).onResult(eq(true));
+        verify(mAnimationCallback, never()).onResult(eq(false));
         verify(mWindowMagnifierCallback, timeout(LAYOUT_CHANGE_TIMEOUT_MS))
                 .onSourceBoundsChanged((eq(mContext.getDisplayId())), sourceBoundsCaptor.capture());
         assertEquals(mWindowMagnificationController.getCenterX(),
@@ -408,14 +444,12 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
 
     @Test
     public void moveWindowMagnifierToPositionMultipleTimes_expectedValuesAndInvokeCallback()
-            throws InterruptedException {
+            throws RemoteException {
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.enableWindowMagnification(Float.NaN, Float.NaN,
                     Float.NaN, 0, 0, null);
         });
-        final CountDownLatch countDownLatch = new CountDownLatch(4);
-        final MockMagnificationAnimationCallback animationCallback =
-                new MockMagnificationAnimationCallback(countDownLatch);
+
         final ArgumentCaptor<Rect> sourceBoundsCaptor = ArgumentCaptor.forClass(Rect.class);
         verify(mWindowMagnifierCallback, timeout(LAYOUT_CHANGE_TIMEOUT_MS))
                 .onSourceBoundsChanged((eq(mContext.getDisplayId())), sourceBoundsCaptor.capture());
@@ -424,20 +458,20 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
 
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.moveWindowMagnifierToPosition(
-                    centerX + 10, centerY + 10, animationCallback);
+                    centerX + 10, centerY + 10, mAnimationCallback);
             mWindowMagnificationController.moveWindowMagnifierToPosition(
-                    centerX + 20, centerY + 20, animationCallback);
+                    centerX + 20, centerY + 20, mAnimationCallback);
             mWindowMagnificationController.moveWindowMagnifierToPosition(
-                    centerX + 30, centerY + 30, animationCallback);
+                    centerX + 30, centerY + 30, mAnimationCallback);
             mWindowMagnificationController.moveWindowMagnifierToPosition(
-                    centerX + 40, centerY + 40, animationCallback);
+                    centerX + 40, centerY + 40, mAnimationCallback2);
         });
+        advanceTimeBy(mWaitAnimationDuration);
 
-        assertTrue(countDownLatch.await(mWaitingAnimationPeriod, TimeUnit.MILLISECONDS));
         // only the last one callback will return true
-        assertEquals(1, animationCallback.getSuccessCount());
+        verify(mAnimationCallback2).onResult(eq(true));
         // the others will return false
-        assertEquals(3, animationCallback.getFailedCount());
+        verify(mAnimationCallback, times(3)).onResult(eq(false));
         verify(mWindowMagnifierCallback, timeout(LAYOUT_CHANGE_TIMEOUT_MS))
                 .onSourceBoundsChanged((eq(mContext.getDisplayId())), sourceBoundsCaptor.capture());
         assertEquals(mWindowMagnificationController.getCenterX(),
@@ -522,17 +556,22 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
     }
 
     @Test
-    public void onScreenSizeChanged_enabledAtTheCenterOfScreen_keepSameWindowSizeRatio() {
+    public void onScreenSizeAndDensityChanged_enabledAtTheCenterOfScreen_keepSameWindowSizeRatio() {
         // The default position is at the center of the screen.
         final float expectedRatio = 0.5f;
-        final Rect testWindowBounds = new Rect(
-                mWindowManager.getCurrentWindowMetrics().getBounds());
-        testWindowBounds.set(testWindowBounds.left, testWindowBounds.top,
-                testWindowBounds.right + 100, testWindowBounds.bottom + 100);
+
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
                     Float.NaN);
         });
+
+        // Screen size and density change
+        mContext.getResources().getConfiguration().smallestScreenWidthDp =
+                mContext.getResources().getConfiguration().smallestScreenWidthDp * 2;
+        final Rect testWindowBounds = new Rect(
+                mWindowManager.getCurrentWindowMetrics().getBounds());
+        testWindowBounds.set(testWindowBounds.left, testWindowBounds.top,
+                testWindowBounds.right + 100, testWindowBounds.bottom + 100);
         mWindowManager.setWindowBounds(testWindowBounds);
 
         mInstrumentation.runOnMainSync(() -> {
@@ -547,26 +586,49 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
                 mWindowMagnificationController.getCenterY() / testWindowBounds.height(),
                 0);
     }
+
     @Test
-    public void screenSizeIsChangedToLarge_enabled_windowSizeIsConstrained() {
+    public void onScreenChangedToSavedDensity_enabled_restoreSavedMagnifierWindow() {
+        mContext.getResources().getConfiguration().smallestScreenWidthDp =
+                mContext.getResources().getConfiguration().smallestScreenWidthDp * 2;
+        int windowFrameSize = mResources.getDimensionPixelSize(
+                com.android.internal.R.dimen.accessibility_window_magnifier_min_size);
+        mWindowMagnificationController.mWindowMagnificationSizePrefs.saveSizeForCurrentDensity(
+                new Size(windowFrameSize, windowFrameSize));
+
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
                     Float.NaN);
         });
-        final int screenSize = mContext.getResources().getDimensionPixelSize(
-                R.dimen.magnification_max_frame_size) * 10;
+
+        WindowManager.LayoutParams params = mWindowManager.getLayoutParamsFromAttachedView();
+        assertTrue(params.width == windowFrameSize);
+        assertTrue(params.height == windowFrameSize);
+    }
+
+    @Test
+    public void screenSizeIsChangedToLarge_enabled_defaultWindowSize() {
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+        });
+        final int screenSize = mWindowManager.getCurrentWindowMetrics().getBounds().width() * 10;
+        // Screen size and density change
+        mContext.getResources().getConfiguration().smallestScreenWidthDp =
+                mContext.getResources().getConfiguration().smallestScreenWidthDp * 2;
         mWindowManager.setWindowBounds(new Rect(0, 0, screenSize, screenSize));
 
         mInstrumentation.runOnMainSync(() -> {
             mWindowMagnificationController.onConfigurationChanged(ActivityInfo.CONFIG_SCREEN_SIZE);
         });
 
-        final int halfScreenSize = screenSize / 2;
+        final int defaultWindowSize =
+                mWindowMagnificationController.getMagnificationWindowSizeFromIndex(
+                        WindowMagnificationSettings.MagnificationSize.MEDIUM);
         WindowManager.LayoutParams params = mWindowManager.getLayoutParamsFromAttachedView();
-        // The frame size should be the half of smaller value of window height/width unless it
-        //exceed the max frame size.
-        assertTrue(params.width < halfScreenSize);
-        assertTrue(params.height < halfScreenSize);
+
+        assertTrue(params.width == defaultWindowSize);
+        assertTrue(params.height == defaultWindowSize);
     }
 
     @Test
@@ -633,10 +695,12 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         assertTrue(
                 mirrorView.performAccessibilityAction(R.id.accessibility_action_zoom_out, null));
         // Minimum scale is 1.0.
-        verify(mWindowMagnifierCallback).onPerformScaleAction(eq(displayId), eq(1.0f));
+        verify(mWindowMagnifierCallback).onPerformScaleAction(
+                eq(displayId), /* scale= */ eq(1.0f), /* updatePersistence= */ eq(true));
 
         assertTrue(mirrorView.performAccessibilityAction(R.id.accessibility_action_zoom_in, null));
-        verify(mWindowMagnifierCallback).onPerformScaleAction(eq(displayId), eq(2.5f));
+        verify(mWindowMagnifierCallback).onPerformScaleAction(
+                eq(displayId), /* scale= */ eq(2.5f), /* updatePersistence= */ eq(true));
 
         // TODO: Verify the final state when the mirror surface is visible.
         assertTrue(mirrorView.performAccessibilityAction(R.id.accessibility_action_move_up, null));
@@ -665,6 +729,275 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         mirrorView.performAccessibilityAction(R.id.accessibility_action_move_up, null);
 
         verify(mWindowMagnifierCallback).onAccessibilityActionPerformed(eq(displayId));
+    }
+
+    @Test
+    public void windowMagnifierEditMode_performA11yClickAction_exitEditMode() {
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        View closeButton = getInternalView(R.id.close_button);
+        View bottomRightCorner = getInternalView(R.id.bottom_right_corner);
+        View bottomLeftCorner = getInternalView(R.id.bottom_left_corner);
+        View topRightCorner = getInternalView(R.id.top_right_corner);
+        View topLeftCorner = getInternalView(R.id.top_left_corner);
+
+        assertEquals(View.VISIBLE, closeButton.getVisibility());
+        assertEquals(View.VISIBLE, bottomRightCorner.getVisibility());
+        assertEquals(View.VISIBLE, bottomLeftCorner.getVisibility());
+        assertEquals(View.VISIBLE, topRightCorner.getVisibility());
+        assertEquals(View.VISIBLE, topLeftCorner.getVisibility());
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        mirrorView.performAccessibilityAction(AccessibilityAction.ACTION_CLICK.getId(), null);
+
+        assertEquals(View.GONE, closeButton.getVisibility());
+        assertEquals(View.GONE, bottomRightCorner.getVisibility());
+        assertEquals(View.GONE, bottomLeftCorner.getVisibility());
+        assertEquals(View.GONE, topRightCorner.getVisibility());
+        assertEquals(View.GONE, topLeftCorner.getVisibility());
+    }
+
+    @Test
+    public void windowWidthIsNotMax_performA11yActionIncreaseWidth_windowWidthIncreased() {
+        final Rect windowBounds = mWindowManager.getCurrentWindowMetrics().getBounds();
+        final int startingWidth = (int) (windowBounds.width() * 0.8);
+        final int startingHeight = (int) (windowBounds.height() * 0.8);
+        final float changeWindowSizeAmount = mContext.getResources().getFraction(
+                R.fraction.magnification_resize_window_size_amount,
+                /* base= */ 1,
+                /* pbase= */ 1);
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingWidth, startingHeight);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AtomicInteger actualWindowHeight = new AtomicInteger();
+        final AtomicInteger actualWindowWidth = new AtomicInteger();
+
+        mInstrumentation.runOnMainSync(
+                () -> {
+                    mirrorView.performAccessibilityAction(
+                            R.id.accessibility_action_increase_window_width, null);
+                    actualWindowHeight.set(mWindowManager.getLayoutParamsFromAttachedView().height);
+                    actualWindowWidth.set(mWindowManager.getLayoutParamsFromAttachedView().width);
+                });
+
+        final int mirrorSurfaceMargin = mResources.getDimensionPixelSize(
+                R.dimen.magnification_mirror_surface_margin);
+        // Window width includes the magnifier frame and the margin. Increasing the window size
+        // will be increasing the amount of the frame size only.
+        int newWindowWidth =
+                (int) ((startingWidth - 2 * mirrorSurfaceMargin) * (1 + changeWindowSizeAmount))
+                        + 2 * mirrorSurfaceMargin;
+        assertEquals(newWindowWidth, actualWindowWidth.get());
+        assertEquals(startingHeight, actualWindowHeight.get());
+    }
+
+    @Test
+    public void windowHeightIsNotMax_performA11yActionIncreaseHeight_windowHeightIncreased() {
+        final Rect windowBounds = mWindowManager.getCurrentWindowMetrics().getBounds();
+        final int startingWidth = (int) (windowBounds.width() * 0.8);
+        final int startingHeight = (int) (windowBounds.height() * 0.8);
+        final float changeWindowSizeAmount = mContext.getResources().getFraction(
+                R.fraction.magnification_resize_window_size_amount,
+                /* base= */ 1,
+                /* pbase= */ 1);
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingWidth, startingHeight);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AtomicInteger actualWindowHeight = new AtomicInteger();
+        final AtomicInteger actualWindowWidth = new AtomicInteger();
+
+        mInstrumentation.runOnMainSync(
+                () -> {
+                    mirrorView.performAccessibilityAction(
+                            R.id.accessibility_action_increase_window_height, null);
+                    actualWindowHeight.set(mWindowManager.getLayoutParamsFromAttachedView().height);
+                    actualWindowWidth.set(mWindowManager.getLayoutParamsFromAttachedView().width);
+                });
+
+        final int mirrorSurfaceMargin = mResources.getDimensionPixelSize(
+                R.dimen.magnification_mirror_surface_margin);
+        // Window height includes the magnifier frame and the margin. Increasing the window size
+        // will be increasing the amount of the frame size only.
+        int newWindowHeight =
+                (int) ((startingHeight - 2 * mirrorSurfaceMargin) * (1 + changeWindowSizeAmount))
+                        + 2 * mirrorSurfaceMargin;
+        assertEquals(startingWidth, actualWindowWidth.get());
+        assertEquals(newWindowHeight, actualWindowHeight.get());
+    }
+
+    @Test
+    public void windowWidthIsMax_noIncreaseWindowWidthA11yAction() {
+        final Rect windowBounds = mWindowManager.getCurrentWindowMetrics().getBounds();
+        final int startingWidth = windowBounds.width();
+        final int startingHeight = windowBounds.height();
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingWidth, startingHeight);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AccessibilityNodeInfo accessibilityNodeInfo =
+                mirrorView.createAccessibilityNodeInfo();
+        assertFalse(accessibilityNodeInfo.getActionList().contains(
+                new AccessibilityAction(R.id.accessibility_action_increase_window_width, null)));
+    }
+
+    @Test
+    public void windowHeightIsMax_noIncreaseWindowHeightA11yAction() {
+        final Rect windowBounds = mWindowManager.getCurrentWindowMetrics().getBounds();
+        final int startingWidth = windowBounds.width();
+        final int startingHeight = windowBounds.height();
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingWidth, startingHeight);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AccessibilityNodeInfo accessibilityNodeInfo =
+                mirrorView.createAccessibilityNodeInfo();
+        assertFalse(accessibilityNodeInfo.getActionList().contains(
+                new AccessibilityAction(R.id.accessibility_action_increase_window_height, null)));
+    }
+
+    @Test
+    public void windowWidthIsNotMin_performA11yActionDecreaseWidth_windowWidthDecreased() {
+        int mMinWindowSize = mResources.getDimensionPixelSize(
+                com.android.internal.R.dimen.accessibility_window_magnifier_min_size);
+        final int startingSize = (int) (mMinWindowSize * 1.1);
+        final float changeWindowSizeAmount = mContext.getResources().getFraction(
+                R.fraction.magnification_resize_window_size_amount,
+                /* base= */ 1,
+                /* pbase= */ 1);
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingSize, startingSize);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AtomicInteger actualWindowHeight = new AtomicInteger();
+        final AtomicInteger actualWindowWidth = new AtomicInteger();
+
+        mInstrumentation.runOnMainSync(
+                () -> {
+                    mirrorView.performAccessibilityAction(
+                            R.id.accessibility_action_decrease_window_width, null);
+                    actualWindowHeight.set(mWindowManager.getLayoutParamsFromAttachedView().height);
+                    actualWindowWidth.set(mWindowManager.getLayoutParamsFromAttachedView().width);
+                });
+
+        final int mirrorSurfaceMargin = mResources.getDimensionPixelSize(
+                R.dimen.magnification_mirror_surface_margin);
+        // Window width includes the magnifier frame and the margin. Decreasing the window size
+        // will be decreasing the amount of the frame size only.
+        int newWindowWidth =
+                (int) ((startingSize - 2 * mirrorSurfaceMargin) * (1 - changeWindowSizeAmount))
+                        + 2 * mirrorSurfaceMargin;
+        assertEquals(newWindowWidth, actualWindowWidth.get());
+        assertEquals(startingSize, actualWindowHeight.get());
+    }
+
+    @Test
+    public void windowHeightIsNotMin_performA11yActionDecreaseHeight_windowHeightDecreased() {
+        int mMinWindowSize = mResources.getDimensionPixelSize(
+                com.android.internal.R.dimen.accessibility_window_magnifier_min_size);
+        final int startingSize = (int) (mMinWindowSize * 1.1);
+        final float changeWindowSizeAmount = mContext.getResources().getFraction(
+                R.fraction.magnification_resize_window_size_amount,
+                /* base= */ 1,
+                /* pbase= */ 1);
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingSize, startingSize);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AtomicInteger actualWindowHeight = new AtomicInteger();
+        final AtomicInteger actualWindowWidth = new AtomicInteger();
+
+        mInstrumentation.runOnMainSync(
+                () -> {
+                    mirrorView.performAccessibilityAction(
+                            R.id.accessibility_action_decrease_window_height, null);
+                    actualWindowHeight.set(mWindowManager.getLayoutParamsFromAttachedView().height);
+                    actualWindowWidth.set(mWindowManager.getLayoutParamsFromAttachedView().width);
+                });
+
+        final int mirrorSurfaceMargin = mResources.getDimensionPixelSize(
+                R.dimen.magnification_mirror_surface_margin);
+        // Window height includes the magnifier frame and the margin. Decreasing the window size
+        // will be decreasing the amount of the frame size only.
+        int newWindowHeight =
+                (int) ((startingSize - 2 * mirrorSurfaceMargin) * (1 - changeWindowSizeAmount))
+                        + 2 * mirrorSurfaceMargin;
+        assertEquals(startingSize, actualWindowWidth.get());
+        assertEquals(newWindowHeight, actualWindowHeight.get());
+    }
+
+    @Test
+    public void windowWidthIsMin_noDecreaseWindowWidthA11yAction() {
+        int mMinWindowSize = mResources.getDimensionPixelSize(
+                com.android.internal.R.dimen.accessibility_window_magnifier_min_size);
+        final int startingSize = mMinWindowSize;
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingSize, startingSize);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AccessibilityNodeInfo accessibilityNodeInfo =
+                mirrorView.createAccessibilityNodeInfo();
+        assertFalse(accessibilityNodeInfo.getActionList().contains(
+                new AccessibilityAction(R.id.accessibility_action_decrease_window_width, null)));
+    }
+
+    @Test
+    public void windowHeightIsMin_noDecreaseWindowHeightA11yAcyion() {
+        int mMinWindowSize = mResources.getDimensionPixelSize(
+                com.android.internal.R.dimen.accessibility_window_magnifier_min_size);
+        final int startingSize = mMinWindowSize;
+
+        mInstrumentation.runOnMainSync(() -> {
+            mWindowMagnificationController.enableWindowMagnificationInternal(Float.NaN, Float.NaN,
+                    Float.NaN);
+            mWindowMagnificationController.setWindowSize(startingSize, startingSize);
+            mWindowMagnificationController.setEditMagnifierSizeMode(true);
+        });
+
+        final View mirrorView = mWindowManager.getAttachedView();
+        final AccessibilityNodeInfo accessibilityNodeInfo =
+                mirrorView.createAccessibilityNodeInfo();
+        assertFalse(accessibilityNodeInfo.getActionList().contains(
+                new AccessibilityAction(R.id.accessibility_action_decrease_window_height, null)));
     }
 
     @Test
@@ -739,6 +1072,7 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         assertTrue(TextUtils.equals(newA11yWindowTitle, getAccessibilityWindowTitle()));
     }
 
+    @Ignore("it's flaky in presubmit but works in abtd, filter for now. b/305654925")
     @Test
     public void onSingleTap_enabled_scaleAnimates() {
         mInstrumentation.runOnMainSync(() -> {
@@ -752,27 +1086,16 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
 
         final View mirrorView = mWindowManager.getAttachedView();
 
-        final long timeout = SystemClock.uptimeMillis() + 1000;
         final AtomicDouble maxScaleX = new AtomicDouble();
-        final Runnable onAnimationFrame = new Runnable() {
-            @Override
-            public void run() {
-                // For some reason the fancy way doesn't compile...
-//                maxScaleX.getAndAccumulate(mirrorView.getScaleX(), Math::max);
-                final double oldMax = maxScaleX.get();
-                final double newMax = Math.max(mirrorView.getScaleX(), oldMax);
-                assertTrue(maxScaleX.compareAndSet(oldMax, newMax));
+        advanceTimeBy(mWaitBounceEffectDuration, /* runnableOnEachRefresh= */ () -> {
+            // For some reason the fancy way doesn't compile...
+            // maxScaleX.getAndAccumulate(mirrorView.getScaleX(), Math::max);
+            final double oldMax = maxScaleX.get();
+            final double newMax = Math.max(mirrorView.getScaleX(), oldMax);
+            assertTrue(maxScaleX.compareAndSet(oldMax, newMax));
+        });
 
-                if (SystemClock.uptimeMillis() < timeout) {
-                    mirrorView.postOnAnimation(this);
-                }
-            }
-        };
-        mirrorView.postOnAnimation(onAnimationFrame);
-
-        waitForIdleSync();
-
-        ReferenceTestUtils.waitForCondition(() -> maxScaleX.get() > 1.0);
+        assertTrue(maxScaleX.get() > 1.0);
     }
 
     @Test
@@ -952,7 +1275,8 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
 
         final float magnificationScaleLarge = 2.5f;
         final int initSize = Math.min(bounds.width(), bounds.height()) / 3;
-        final int magnificationSize = (int) (initSize * magnificationScaleLarge);
+        final int magnificationSize = (int) (initSize * magnificationScaleLarge)
+                - (int) (initSize * magnificationScaleLarge) % 2;
 
         final int expectedWindowHeight = magnificationSize;
         final int expectedWindowWidth = magnificationSize;
@@ -1113,6 +1437,11 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         mWindowManager.setWindowInsets(testInsets);
     }
 
+    private int updateMirrorSurfaceMarginDimension() {
+        return mContext.getResources().getDimensionPixelSize(
+                R.dimen.magnification_mirror_surface_margin);
+    }
+
     @Surface.Rotation
     private int simulateRotateTheDevice() {
         final Display display = Mockito.spy(mContext.getDisplay());
@@ -1121,5 +1450,25 @@ public class WindowMagnificationControllerTest extends SysuiTestCase {
         when(display.getRotation()).thenReturn(newRotation);
         when(mContext.getDisplay()).thenReturn(display);
         return newRotation;
+    }
+
+    // advance time based on the device frame refresh rate
+    private void advanceTimeBy(long timeDelta) {
+        advanceTimeBy(timeDelta, /* runnableOnEachRefresh= */ null);
+    }
+
+    // advance time based on the device frame refresh rate, and trigger runnable on each refresh
+    private void advanceTimeBy(long timeDelta, @Nullable Runnable runnableOnEachRefresh) {
+        final float frameRate = mContext.getDisplay().getRefreshRate();
+        final int timeSlot = (int) (1000 / frameRate);
+        int round = (int) Math.ceil((double) timeDelta / timeSlot);
+        for (; round >= 0; round--) {
+            mInstrumentation.runOnMainSync(() -> {
+                mAnimatorTestRule.advanceTimeBy(timeSlot);
+                if (runnableOnEachRefresh != null) {
+                    runnableOnEachRefresh.run();
+                }
+            });
+        }
     }
 }

@@ -593,6 +593,7 @@ message InsetsSourceProviderProto {
     optional bool seamless_rotating = 13;
     optional int64 finish_seamless_rotate_frame_number = 14;
     optional bool controllable = 15;
+    optional WindowStateProto source_window_state = 16;
 }
 
 message ImeInsetsSourceProviderProto {
@@ -609,4 +610,6 @@ message BackNavigationProto {
     optional bool animation_in_progress = 1;
     optional int32 last_back_type = 2;
     optional bool show_wallpaper = 3;
+    optional string main_open_activity = 4;
+    optional bool animation_running = 5;
 }

@@ -22,7 +22,7 @@ import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
 import android.view.View
 import androidx.test.filters.SmallTest
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.media.controls.models.player.MediaViewHolder
 import com.android.systemui.media.controls.models.recommendation.RecommendationViewHolder
@@ -201,8 +201,8 @@ class MediaViewControllerTest : SysuiTestCase() {
         whenever(mockCopiedState.widgetStates)
             .thenReturn(
                 mutableMapOf(
-                    R.id.media_title1 to mediaTitleWidgetState,
-                    R.id.media_subtitle1 to mediaSubTitleWidgetState,
+                    R.id.media_title to mediaTitleWidgetState,
+                    R.id.media_subtitle to mediaSubTitleWidgetState,
                     R.id.media_cover1_container to mediaContainerWidgetState
                 )
             )

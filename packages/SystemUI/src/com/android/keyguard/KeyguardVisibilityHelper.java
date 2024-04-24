@@ -17,13 +17,15 @@
 package com.android.keyguard;
 
 import static com.android.systemui.statusbar.StatusBarState.KEYGUARD;
+import static com.android.systemui.statusbar.StatusBarState.SHADE;
 
 import android.util.Property;
 import android.view.View;
 
 import com.android.app.animation.Interpolators;
+import com.android.systemui.keyguard.shared.KeyguardShadeMigrationNssl;
 import com.android.systemui.log.LogBuffer;
-import com.android.systemui.log.LogLevel;
+import com.android.systemui.log.core.LogLevel;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.notification.AnimatableProperty;
 import com.android.systemui.statusbar.notification.PropertyAnimator;
@@ -31,6 +33,7 @@ import com.android.systemui.statusbar.notification.stack.AnimationProperties;
 import com.android.systemui.statusbar.phone.DozeParameters;
 import com.android.systemui.statusbar.phone.ScreenOffAnimationController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
+import com.android.systemui.util.Assert;
 
 import com.google.errorprone.annotations.CompileTimeConstant;
 
@@ -85,6 +88,7 @@ public class KeyguardVisibilityHelper {
             boolean keyguardFadingAway,
             boolean goingToFullShade,
             int oldStatusBarState) {
+        Assert.isMainThread();
         PropertyAnimator.cancelAnimation(mView, AnimatableProperty.ALPHA);
         boolean isOccluded = mKeyguardStateController.isOccluded();
         mKeyguardViewVisibilityAnimating = false;
@@ -122,7 +126,16 @@ public class KeyguardVisibilityHelper {
                     true /* animate */);
             log("keyguardFadingAway transition w/ Y Aniamtion");
         } else if (statusBarState == KEYGUARD) {
-            if (keyguardFadingAway) {
+            // Sometimes, device will be unlocked and then locked very quickly.
+            // keyguardFadingAway hasn't been set to false cause unlock animation hasn't finished
+            // So we should not animate keyguard fading away in this case (when oldState is SHADE)
+            if (oldStatusBarState != SHADE) {
+                log("statusBarState == KEYGUARD && oldStatusBarState != SHADE");
+            } else {
+                log("statusBarState == KEYGUARD && oldStatusBarState == SHADE");
+            }
+
+            if (keyguardFadingAway && oldStatusBarState != SHADE) {
                 mKeyguardViewVisibilityAnimating = true;
                 AnimationProperties animProps = new AnimationProperties()
                         .setDelay(0)
@@ -150,13 +163,17 @@ public class KeyguardVisibilityHelper {
                         animProps,
                         true /* animate */);
             } else if (mScreenOffAnimationController.shouldAnimateInKeyguard()) {
-                log("ScreenOff transition");
-                mKeyguardViewVisibilityAnimating = true;
+                if (KeyguardShadeMigrationNssl.isEnabled()) {
+                    log("Using GoneToAodTransition");
+                    mKeyguardViewVisibilityAnimating = false;
+                } else {
+                    log("ScreenOff transition");
+                    mKeyguardViewVisibilityAnimating = true;
 
-                // Ask the screen off animation controller to animate the keyguard visibility for us
-                // since it may need to be cancelled due to keyguard lifecycle events.
-                mScreenOffAnimationController.animateInKeyguard(
-                        mView, mSetVisibleEndRunnable);
+                    // Ask the screen off animation controller to animate the keyguard visibility
+                    // for us since it may need to be cancelled due to keyguard lifecycle events.
+                    mScreenOffAnimationController.animateInKeyguard(mView, mSetVisibleEndRunnable);
+                }
             } else {
                 log("Direct set Visibility to VISIBLE");
                 mView.setVisibility(View.VISIBLE);

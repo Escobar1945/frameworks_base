@@ -18,6 +18,7 @@ package com.android.wm.shell.windowdecor;
 
 import android.app.ActivityManager.RunningTaskInfo;
 import android.app.WindowConfiguration;
+import android.app.WindowConfiguration.WindowingMode;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -64,7 +65,8 @@ public class CaptionWindowDecoration extends WindowDecoration<WindowDecorLinearL
             Handler handler,
             Choreographer choreographer,
             SyncTransactionQueue syncQueue) {
-        super(context, displayController, taskOrganizer, taskInfo, taskSurface);
+        super(context, displayController, taskOrganizer, taskInfo, taskSurface,
+                taskInfo.getConfiguration());
 
         mHandler = handler;
         mChoreographer = choreographer;
@@ -113,7 +115,7 @@ public class CaptionWindowDecoration extends WindowDecoration<WindowDecorLinearL
         mRelayoutParams.reset();
         mRelayoutParams.mRunningTaskInfo = taskInfo;
         mRelayoutParams.mLayoutResId = R.layout.caption_window_decor;
-        mRelayoutParams.mCaptionHeightId = R.dimen.freeform_decor_caption_height;
+        mRelayoutParams.mCaptionHeightId = getCaptionHeightId(taskInfo.getWindowingMode());
         mRelayoutParams.mShadowRadiusId = shadowRadiusID;
         mRelayoutParams.mApplyStartTransactionOnDraw = applyStartTransactionOnDraw;
 
@@ -143,8 +145,12 @@ public class CaptionWindowDecoration extends WindowDecoration<WindowDecorLinearL
                     mHandler,
                     mChoreographer,
                     mDisplay.getDisplayId(),
+                    0 /* taskCornerRadius */,
                     mDecorationContainerSurface,
-                    mDragPositioningCallback);
+                    mDragPositioningCallback,
+                    mSurfaceControlBuilderSupplier,
+                    mSurfaceControlTransactionSupplier,
+                    mDisplayController);
         }
 
         final int touchSlop = ViewConfiguration.get(mResult.mRootView.getContext())
@@ -220,5 +226,15 @@ public class CaptionWindowDecoration extends WindowDecoration<WindowDecorLinearL
     public void close() {
         closeDragResizeListener();
         super.close();
+    }
+
+    @Override
+    int getCaptionHeightId(@WindowingMode int windowingMode) {
+        return R.dimen.freeform_decor_caption_height;
+    }
+
+    @Override
+    int getCaptionViewId() {
+        return R.id.caption;
     }
 }

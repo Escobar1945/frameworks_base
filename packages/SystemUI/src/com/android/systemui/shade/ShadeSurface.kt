@@ -17,9 +17,9 @@ package com.android.systemui.shade
 
 import android.view.ViewPropertyAnimator
 import com.android.systemui.statusbar.GestureRecorder
-import com.android.systemui.statusbar.NotificationShelfController
+import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayoutController
 import com.android.systemui.statusbar.phone.CentralSurfaces
-import com.android.systemui.statusbar.phone.HeadsUpManagerPhone
+import com.android.systemui.statusbar.policy.HeadsUpManager
 
 /**
  * Allows CentralSurfacesImpl to interact with the shade. Only CentralSurfacesImpl should reference
@@ -32,20 +32,8 @@ interface ShadeSurface : ShadeViewController {
         centralSurfaces: CentralSurfaces,
         recorder: GestureRecorder,
         hideExpandedRunnable: Runnable,
-        notificationShelfController: NotificationShelfController,
-        headsUpManager: HeadsUpManagerPhone
+        headsUpManager: HeadsUpManager
     )
-
-    /**
-     * Animate QS collapse by flinging it. If QS is expanded, it will collapse into QQS and stop. If
-     * in split shade, it will collapse the whole shade.
-     *
-     * @param fullyCollapse Do not stop when QS becomes QQS. Fling until QS isn't visible anymore.
-     */
-    fun animateCollapseQs(fullyCollapse: Boolean)
-
-    /** Returns whether the shade can be collapsed. */
-    fun canBeCollapsed(): Boolean
 
     /** Cancels any pending collapses. */
     fun cancelPendingCollapse()
@@ -53,36 +41,11 @@ interface ShadeSurface : ShadeViewController {
     /** Cancels the views current animation. */
     fun cancelAnimation()
 
-    /**
-     * Close the keyguard user switcher if it is open and capable of closing.
-     *
-     * Has no effect if user switcher isn't supported, if the user switcher is already closed, or if
-     * the user switcher uses "simple" mode. The simple user switcher cannot be closed.
-     *
-     * @return true if the keyguard user switcher was open, and is now closed
-     */
-    fun closeUserSwitcherIfOpen(): Boolean
-
-    /** Input focus transfer is about to happen. */
-    fun startWaitingForExpandGesture()
-
-    /**
-     * Called when this view is no longer waiting for input focus transfer.
-     *
-     * There are two scenarios behind this function call. First, input focus transfer has
-     * successfully happened and this view already received synthetic DOWN event.
-     * (mExpectingSynthesizedDown == false). Do nothing.
-     *
-     * Second, before input focus transfer finished, user may have lifted finger in previous window
-     * and this window never received synthetic DOWN event. (mExpectingSynthesizedDown == true). In
-     * this case, we use the velocity to trigger fling event.
-     *
-     * @param velocity unit is in px / millis
-     */
-    fun stopWaitingForExpandGesture(cancel: Boolean, velocity: Float)
-
     /** Animates the view from its current alpha to zero then runs the runnable. */
     fun fadeOut(startDelayMs: Long, durationMs: Long, endAction: Runnable): ViewPropertyAnimator
+
+    /** Returns the NSSL controller. */
+    val notificationStackScrollLayoutController: NotificationStackScrollLayoutController
 
     /** Set whether the bouncer is showing. */
     fun setBouncerShowing(bouncerShowing: Boolean)
@@ -115,12 +78,6 @@ interface ShadeSurface : ShadeViewController {
 
     /** Sets the view's alpha to max. */
     fun resetAlpha()
-
-    /** Called when Back gesture has been committed (i.e. a back event has definitely occurred) */
-    fun onBackPressed()
-
-    /** Sets progress of the predictive back animation. */
-    fun onBackProgressed(progressFraction: Float)
 
     /** @see com.android.systemui.keyguard.ScreenLifecycle.Observer.onScreenTurningOn */
     fun onScreenTurningOn()

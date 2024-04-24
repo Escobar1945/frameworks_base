@@ -18,6 +18,7 @@ package com.android.systemui.qs.tiles.dialog;
 
 import static com.android.settingslib.mobile.MobileMappings.getIconKey;
 import static com.android.settingslib.mobile.MobileMappings.mapIconSets;
+import static com.android.settingslib.wifi.WifiUtils.getHotspotIconResource;
 import static com.android.wifitrackerlib.WifiEntry.CONNECTED_STATE_CONNECTED;
 
 import android.animation.Animator;
@@ -73,7 +74,7 @@ import com.android.settingslib.mobile.MobileMappings;
 import com.android.settingslib.mobile.TelephonyIcons;
 import com.android.settingslib.net.SignalStrengthUtil;
 import com.android.settingslib.wifi.WifiUtils;
-import com.android.systemui.R;
+import com.android.settingslib.wifi.dpp.WifiDppIntentHelper;
 import com.android.systemui.animation.ActivityLaunchAnimator;
 import com.android.systemui.animation.DialogLaunchAnimator;
 import com.android.systemui.broadcast.BroadcastDispatcher;
@@ -82,6 +83,7 @@ import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.flags.Flags;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.res.R;
 import com.android.systemui.statusbar.connectivity.AccessPointController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.statusbar.policy.LocationController;
@@ -89,6 +91,7 @@ import com.android.systemui.toast.SystemUIToast;
 import com.android.systemui.toast.ToastFactory;
 import com.android.systemui.util.CarrierConfigTracker;
 import com.android.systemui.util.settings.GlobalSettings;
+import com.android.wifitrackerlib.HotspotNetworkEntry;
 import com.android.wifitrackerlib.MergedCarrierEntry;
 import com.android.wifitrackerlib.WifiEntry;
 
@@ -172,7 +175,9 @@ public class InternetDialogController implements AccessPointController.AccessPoi
     private Executor mExecutor;
     private AccessPointController mAccessPointController;
     private IntentFilter mConnectionStateFilter;
-    private InternetDialogCallback mCallback;
+    @VisibleForTesting
+    @Nullable
+    InternetDialogCallback mCallback;
     private UiEventLogger mUiEventLogger;
     private BroadcastDispatcher mBroadcastDispatcher;
     private KeyguardUpdateMonitor mKeyguardUpdateMonitor;
@@ -215,12 +220,16 @@ public class InternetDialogController implements AccessPointController.AccessPoi
             new KeyguardUpdateMonitorCallback() {
                 @Override
                 public void onRefreshCarrierInfo() {
-                    mCallback.onRefreshCarrierInfo();
+                    if (mCallback != null) {
+                        mCallback.onRefreshCarrierInfo();
+                    }
                 }
 
                 @Override
                 public void onSimStateChanged(int subId, int slotId, int simState) {
-                    mCallback.onSimStateChanged();
+                    if (mCallback != null) {
+                        mCallback.onSimStateChanged();
+                    }
                 }
             };
 
@@ -331,6 +340,7 @@ public class InternetDialogController implements AccessPointController.AccessPoi
         mKeyguardUpdateMonitor.removeCallback(mKeyguardUpdateCallback);
         mConnectivityManager.unregisterNetworkCallback(mConnectivityManagerNetworkCallback);
         mConnectedWifiInternetMonitor.unregisterCallback();
+        mCallback = null;
     }
 
     @VisibleForTesting
@@ -447,16 +457,31 @@ public class InternetDialogController implements AccessPointController.AccessPoi
 
     @Nullable
     Drawable getInternetWifiDrawable(@NonNull WifiEntry wifiEntry) {
-        if (wifiEntry.getLevel() == WifiEntry.WIFI_LEVEL_UNREACHABLE) {
-            return null;
-        }
-        final Drawable drawable =
-                mWifiIconInjector.getIcon(wifiEntry.shouldShowXLevelIcon(), wifiEntry.getLevel());
+        Drawable drawable = getWifiDrawable(wifiEntry);
         if (drawable == null) {
             return null;
         }
         drawable.setTint(mContext.getColor(R.color.connected_network_primary_color));
         return drawable;
+    }
+
+    /**
+     * Returns a Wi-Fi icon {@link Drawable}.
+     *
+     * @param wifiEntry {@link WifiEntry}
+     */
+    @Nullable
+    Drawable getWifiDrawable(@NonNull WifiEntry wifiEntry) {
+        if (wifiEntry instanceof HotspotNetworkEntry) {
+            int deviceType = ((HotspotNetworkEntry) wifiEntry).getDeviceType();
+            return mContext.getDrawable(getHotspotIconResource(deviceType));
+        }
+        // If the Wi-Fi level is equal to WIFI_LEVEL_UNREACHABLE(-1), then a null drawable
+        // will be returned.
+        if (wifiEntry.getLevel() == WifiEntry.WIFI_LEVEL_UNREACHABLE) {
+            return null;
+        }
+        return mWifiIconInjector.getIcon(wifiEntry.shouldShowXLevelIcon(), wifiEntry.getLevel());
     }
 
     Drawable getSignalStrengthDrawable(int subId) {
@@ -724,7 +749,7 @@ public class InternetDialogController implements AccessPointController.AccessPoi
         ActivityLaunchAnimator.Controller controller =
                 mDialogLaunchAnimator.createActivityLaunchController(view);
 
-        if (controller == null) {
+        if (controller == null && mCallback != null) {
             mCallback.dismissDialog();
         }
 
@@ -1095,11 +1120,22 @@ public class InternetDialogController implements AccessPointController.AccessPoi
             mHasWifiEntries = false;
         }
 
-        mCallback.onAccessPointsChanged(wifiEntries, connectedEntry, hasMoreWifiEntries);
+        if (mCallback != null) {
+            mCallback.onAccessPointsChanged(wifiEntries, connectedEntry, hasMoreWifiEntries);
+        }
     }
 
     @Override
     public void onSettingsActivityTriggered(Intent settingsIntent) {
+    }
+
+    @Override
+    public void onWifiScan(boolean isScan) {
+        if (!isWifiEnabled() || isDeviceLocked()) {
+            mCallback.onWifiScan(false);
+            return;
+        }
+        mCallback.onWifiScan(isScan);
     }
 
     private class InternetTelephonyCallback extends TelephonyCallback implements
@@ -1117,34 +1153,46 @@ public class InternetDialogController implements AccessPointController.AccessPoi
 
         @Override
         public void onServiceStateChanged(@NonNull ServiceState serviceState) {
-            mCallback.onServiceStateChanged(serviceState);
+            if (mCallback != null) {
+                mCallback.onServiceStateChanged(serviceState);
+            }
         }
 
         @Override
         public void onDataConnectionStateChanged(int state, int networkType) {
-            mCallback.onDataConnectionStateChanged(state, networkType);
+            if (mCallback != null) {
+                mCallback.onDataConnectionStateChanged(state, networkType);
+            }
         }
 
         @Override
         public void onSignalStrengthsChanged(@NonNull SignalStrength signalStrength) {
-            mCallback.onSignalStrengthsChanged(signalStrength);
+            if (mCallback != null) {
+                mCallback.onSignalStrengthsChanged(signalStrength);
+            }
         }
 
         @Override
         public void onDisplayInfoChanged(@NonNull TelephonyDisplayInfo telephonyDisplayInfo) {
             mSubIdTelephonyDisplayInfoMap.put(mSubId, telephonyDisplayInfo);
-            mCallback.onDisplayInfoChanged(telephonyDisplayInfo);
+            if (mCallback != null) {
+                mCallback.onDisplayInfoChanged(telephonyDisplayInfo);
+            }
         }
 
         @Override
         public void onUserMobileDataStateChanged(boolean enabled) {
-            mCallback.onUserMobileDataStateChanged(enabled);
+            if (mCallback != null) {
+                mCallback.onUserMobileDataStateChanged(enabled);
+            }
         }
 
         @Override
         public void onCarrierNetworkChange(boolean active) {
             mCarrierNetworkChangeMode = active;
-            mCallback.onCarrierNetworkChange(active);
+            if (mCallback != null) {
+                mCallback.onCarrierNetworkChange(active);
+            }
         }
     }
 
@@ -1171,14 +1219,18 @@ public class InternetDialogController implements AccessPointController.AccessPoi
                 scanWifiAccessPoints();
             }
             // update UI
-            mCallback.onCapabilitiesChanged(network, capabilities);
+            if (mCallback != null) {
+                mCallback.onCapabilitiesChanged(network, capabilities);
+            }
         }
 
         @Override
         @WorkerThread
         public void onLost(@NonNull Network network) {
             mHasEthernet = false;
-            mCallback.onLost(network);
+            if (mCallback != null) {
+                mCallback.onLost(network);
+            }
         }
     }
 
@@ -1289,8 +1341,16 @@ public class InternetDialogController implements AccessPointController.AccessPoi
         mDefaultDataSubId = defaultDataSubId;
     }
 
-    public WifiUtils.InternetIconInjector getWifiIconInjector() {
-        return mWifiIconInjector;
+    boolean mayLaunchShareWifiSettings(WifiEntry wifiEntry) {
+        Intent intent = getConfiguratorQrCodeGeneratorIntentOrNull(wifiEntry);
+        if (intent == null) {
+            return false;
+        }
+        if (mCallback != null) {
+            mCallback.dismissDialog();
+        }
+        mActivityStarter.startActivity(intent, false /* dismissShade */);
+        return true;
     }
 
     interface InternetDialogCallback {
@@ -1321,6 +1381,8 @@ public class InternetDialogController implements AccessPointController.AccessPoi
 
         void onAccessPointsChanged(@Nullable List<WifiEntry> wifiEntries,
                 @Nullable WifiEntry connectedEntry, boolean hasMoreWifiEntries);
+
+        void onWifiScan(boolean isScan);
     }
 
     void makeOverlayToast(int stringId) {
@@ -1377,5 +1439,18 @@ public class InternetDialogController implements AccessPointController.AccessPoi
                 }
             }
         }, SHORT_DURATION_TIMEOUT);
+    }
+
+    Intent getConfiguratorQrCodeGeneratorIntentOrNull(WifiEntry wifiEntry) {
+        if (!mFeatureFlags.isEnabled(Flags.SHARE_WIFI_QS_BUTTON) || wifiEntry == null
+                || mWifiManager == null || !wifiEntry.canShare()) {
+            return null;
+        }
+        Intent intent = new Intent();
+        intent.setAction(WifiDppIntentHelper.ACTION_CONFIGURATOR_AUTH_QR_CODE_GENERATOR);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        WifiDppIntentHelper.setConfiguratorIntentExtra(intent, mWifiManager,
+                wifiEntry.getWifiConfiguration());
+        return intent;
     }
 }

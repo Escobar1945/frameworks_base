@@ -40,6 +40,7 @@ import com.android.internal.app.IVoiceInteractionSessionShowCallback;
 import com.android.internal.app.IVoiceInteractionSoundTriggerSession;
 import com.android.internal.app.IVoiceInteractor;
 import com.android.internal.app.IVisualQueryDetectionAttentionListener;
+import com.android.internal.app.IVisualQueryRecognitionStatusListener;
 
 interface IVoiceInteractionManagerService {
     void showSession(in Bundle sessionArgs, int flags, String attributionTag);
@@ -325,6 +326,9 @@ interface IVoiceInteractionManagerService {
     void shutdownHotwordDetectionService();
 
     @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
+    void subscribeVisualQueryRecognitionStatus(in IVisualQueryRecognitionStatusListener listener);
+
+    @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
     void enableVisualQueryDetection(in IVisualQueryDetectionAttentionListener Listener);
 
     @EnforcePermission("ACCESS_VOICE_INTERACTION_SERVICE")
@@ -355,6 +359,12 @@ interface IVoiceInteractionManagerService {
             in IHotwordRecognitionStatusCallback callback);
 
     /**
+     * Test API to reset training data egress count for test.
+     */
+    @EnforcePermission("RESET_HOTWORD_TRAINING_DATA_EGRESS_COUNT")
+    void resetHotwordTrainingDataEgressCountForTest();
+
+    /**
      * Starts to listen the status of visible activity.
      */
     void startListeningVisibleActivityChanged(in IBinder token);
@@ -378,4 +388,14 @@ interface IVoiceInteractionManagerService {
     oneway void notifyActivityEventChanged(
             in IBinder activityToken,
             int type);
+
+    /**
+      * Allows/disallows receiving training data from trusted process.
+      * Caller must be the active assistant and a preinstalled assistant.
+      *
+      * @param allowed whether to allow/disallow receiving training data produced during
+      * sandboxed detection (from trusted process).
+      */
+      @EnforcePermission("MANAGE_HOTWORD_DETECTION")
+      void setShouldReceiveSandboxedTrainingData(boolean allowed);
 }

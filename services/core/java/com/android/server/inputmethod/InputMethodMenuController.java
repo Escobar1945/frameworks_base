@@ -26,7 +26,6 @@ import android.content.DialogInterface;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
-import android.util.ArrayMap;
 import android.util.Slog;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -54,7 +53,6 @@ final class InputMethodMenuController {
     private final InputMethodManagerService mService;
     private final InputMethodUtils.InputMethodSettings mSettings;
     private final InputMethodSubtypeSwitchingController mSwitchingController;
-    private final ArrayMap<String, InputMethodInfo> mMethodMap;
     private final WindowManagerInternal mWindowManagerInternal;
 
     private AlertDialog.Builder mDialogBuilder;
@@ -73,20 +71,21 @@ final class InputMethodMenuController {
         mService = service;
         mSettings = mService.mSettings;
         mSwitchingController = mService.mSwitchingController;
-        mMethodMap = mService.mMethodMap;
         mWindowManagerInternal = LocalServices.getService(WindowManagerInternal.class);
     }
 
     void showInputMethodMenu(boolean showAuxSubtypes, int displayId) {
         if (DEBUG) Slog.v(TAG, "Show switching menu. showAuxSubtypes=" + showAuxSubtypes);
 
-        final boolean isScreenLocked = isScreenLocked();
-
-        final String lastInputMethodId = mSettings.getSelectedInputMethod();
-        int lastInputMethodSubtypeId = mSettings.getSelectedInputMethodSubtypeId(lastInputMethodId);
-        if (DEBUG) Slog.v(TAG, "Current IME: " + lastInputMethodId);
-
         synchronized (ImfLock.class) {
+            final boolean isScreenLocked = mWindowManagerInternal.isKeyguardLocked()
+                    && mWindowManagerInternal.isKeyguardSecure(
+                            mService.getCurrentImeUserIdLocked());
+            final String lastInputMethodId = mSettings.getSelectedInputMethod();
+            int lastInputMethodSubtypeId =
+                    mSettings.getSelectedInputMethodSubtypeId(lastInputMethodId);
+            if (DEBUG) Slog.v(TAG, "Current IME: " + lastInputMethodId);
+
             final List<ImeSubtypeListItem> imList = mSwitchingController
                     .getSortedInputMethodAndSubtypeListForImeMenuLocked(
                             showAuxSubtypes, isScreenLocked);
@@ -101,7 +100,8 @@ final class InputMethodMenuController {
                         mService.getCurrentInputMethodSubtypeLocked();
                 if (currentSubtype != null) {
                     final String curMethodId = mService.getSelectedMethodIdLocked();
-                    final InputMethodInfo currentImi = mMethodMap.get(curMethodId);
+                    final InputMethodInfo currentImi =
+                            mService.queryInputMethodForCurrentUserLocked(curMethodId);
                     lastInputMethodSubtypeId = SubtypeUtils.getSubtypeIdFromHashCode(
                             currentImi, currentSubtype.hashCode());
                 }
@@ -175,13 +175,13 @@ final class InputMethodMenuController {
                     int subtypeId = mSubtypeIds[which];
                     adapter.mCheckedItem = which;
                     adapter.notifyDataSetChanged();
-                    hideInputMethodMenu();
                     if (im != null) {
                         if (subtypeId < 0 || subtypeId >= im.getSubtypeCount()) {
                             subtypeId = NOT_A_SUBTYPE_ID;
                         }
                         mService.setInputMethodLocked(im.getId(), subtypeId);
                     }
+                    hideInputMethodMenuLocked();
                 }
             };
             mDialogBuilder.setSingleChoiceItems(adapter, checkedItem, choiceListener);
@@ -202,12 +202,8 @@ final class InputMethodMenuController {
             mService.updateSystemUiLocked();
             mService.sendOnNavButtonFlagsChangedLocked();
             mSwitchingDialog.show();
-        }
-    }
 
-    private boolean isScreenLocked() {
-        return mWindowManagerInternal.isKeyguardLocked()
-                && mWindowManagerInternal.isKeyguardSecure(mSettings.getCurrentUserId());
+        }
     }
 
     void updateKeyboardFromSettingsLocked() {
@@ -220,12 +216,18 @@ final class InputMethodMenuController {
         }
     }
 
+    /**
+     * Hides the input method switcher menu.
+     */
     void hideInputMethodMenu() {
         synchronized (ImfLock.class) {
             hideInputMethodMenuLocked();
         }
     }
 
+    /**
+     * Hides the input method switcher menu, synchronised version of {@link #hideInputMethodMenu}.
+     */
     @GuardedBy("ImfLock.class")
     void hideInputMethodMenuLocked() {
         if (DEBUG) Slog.v(TAG, "Hide switching menu");

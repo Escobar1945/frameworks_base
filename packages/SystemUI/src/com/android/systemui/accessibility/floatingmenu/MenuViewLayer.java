@@ -59,9 +59,11 @@ import androidx.lifecycle.Observer;
 import com.android.internal.accessibility.dialog.AccessibilityTarget;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.Preconditions;
-import com.android.systemui.R;
+import com.android.systemui.Flags;
+import com.android.systemui.res.R;
 import com.android.systemui.util.settings.SecureSettings;
-import com.android.wm.shell.bubbles.DismissView;
+import com.android.wm.shell.bubbles.DismissViewUtils;
+import com.android.wm.shell.common.bubbles.DismissView;
 import com.android.wm.shell.common.magnetictarget.MagnetizedObject;
 
 import java.lang.annotation.Retention;
@@ -77,7 +79,8 @@ import java.util.Optional;
  */
 @SuppressLint("ViewConstructor")
 class MenuViewLayer extends FrameLayout implements
-        ViewTreeObserver.OnComputeInternalInsetsListener, View.OnClickListener, ComponentCallbacks {
+        ViewTreeObserver.OnComputeInternalInsetsListener, View.OnClickListener, ComponentCallbacks,
+        MenuView.OnMoveToTuckedListener {
     private static final int SHOW_MESSAGE_DELAY_MS = 3000;
 
     private final WindowManager mWindowManager;
@@ -184,6 +187,7 @@ class MenuViewLayer extends FrameLayout implements
         mMenuAnimationController.setDismissCallback(this::hideMenuAndShowMessage);
         mMenuAnimationController.setSpringAnimationsEndAction(this::onSpringAnimationsEndAction);
         mDismissView = new DismissView(context);
+        DismissViewUtils.setup(mDismissView);
         mDismissAnimationController = new DismissAnimationController(mDismissView, mMenuView);
         mDismissAnimationController.setMagnetListener(new MagnetizedObject.MagnetListener() {
             @Override
@@ -208,6 +212,7 @@ class MenuViewLayer extends FrameLayout implements
         mMenuListViewTouchHandler = new MenuListViewTouchHandler(mMenuAnimationController,
                 mDismissAnimationController);
         mMenuView.addOnItemTouchListenerToList(mMenuListViewTouchHandler);
+        mMenuView.setMoveToTuckedListener(this);
 
         mMessageView = new MenuMessageView(context);
 
@@ -229,6 +234,10 @@ class MenuViewLayer extends FrameLayout implements
         addView(mMenuView, LayerIndex.MENU_VIEW);
         addView(mDismissView, LayerIndex.DISMISS_VIEW);
         addView(mMessageView, LayerIndex.MESSAGE_VIEW);
+
+        if (Flags.floatingMenuAnimatedTuck()) {
+            setClipChildren(true);
+        }
     }
 
     @Override
@@ -329,7 +338,7 @@ class MenuViewLayer extends FrameLayout implements
             mMenuViewAppearance.onImeVisibilityChanged(windowInsets.isVisible(ime()), imeTop);
 
             mMenuView.onEdgeChanged();
-            mMenuView.onPositionChanged();
+            mMenuView.onPositionChanged(/* animateMovement = */ true);
 
             mImeInsetsRect.set(imeInsetsRect);
         }
@@ -351,6 +360,24 @@ class MenuViewLayer extends FrameLayout implements
         mShouldShowDockTooltip = !hasSeenTooltip;
     }
 
+    public void onMoveToTuckedChanged(boolean moveToTuck) {
+        if (Flags.floatingMenuOverlapsNavBarsFlag()) {
+            if (moveToTuck) {
+                final Rect bounds = mMenuViewAppearance.getWindowAvailableBounds();
+                final int[] location = getLocationOnScreen();
+                bounds.offset(
+                        location[0],
+                        location[1]
+                );
+
+                setClipBounds(bounds);
+            }
+            // Instead of clearing clip bounds when moveToTuck is false,
+            // wait until the spring animation finishes.
+        }
+        // Function is a no-operation if flag is disabled.
+    }
+
     private void onSpringAnimationsEndAction() {
         if (mShouldShowDockTooltip) {
             mEduTooltipView = Optional.of(new MenuEduTooltipView(mContext, mMenuViewAppearance));
@@ -359,6 +386,15 @@ class MenuViewLayer extends FrameLayout implements
                     TooltipType.DOCK));
 
             mMenuAnimationController.startTuckedAnimationPreview();
+        }
+
+        if (Flags.floatingMenuAnimatedTuck()) {
+            if (!mMenuView.isMoveToTucked()) {
+                setClipBounds(null);
+            }
+        }
+        if (Flags.floatingMenuImeDisplacementAnimation()) {
+            mMenuView.onArrivalAtPosition();
         }
     }
 

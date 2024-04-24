@@ -19,7 +19,7 @@ package com.android.server.accessibility.magnification;
 import static android.accessibilityservice.MagnificationConfig.MAGNIFICATION_MODE_FULLSCREEN;
 
 import static com.android.server.accessibility.magnification.FullScreenMagnificationController.MagnificationInfoChangedCallback;
-import static com.android.server.accessibility.magnification.MockWindowMagnificationConnection.TEST_DISPLAY;
+import static com.android.server.accessibility.magnification.MockMagnificationConnection.TEST_DISPLAY;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -129,6 +130,8 @@ public class FullScreenMagnificationControllerTest {
 
     public DisplayManagerInternal mDisplayManagerInternalMock = mock(DisplayManagerInternal.class);
 
+    private float mOriginalMagnificationPersistedScale;
+
     @Before
     public void setUp() {
         Looper looper = InstrumentationRegistry.getContext().getMainLooper();
@@ -142,6 +145,9 @@ public class FullScreenMagnificationControllerTest {
         mResolver = new MockContentResolver();
         mResolver.addProvider(Settings.AUTHORITY, new FakeSettingsProvider());
         when(mMockContext.getContentResolver()).thenReturn(mResolver);
+        mOriginalMagnificationPersistedScale = Settings.Secure.getFloatForUser(mResolver,
+                Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_SCALE, 2.0f,
+                CURRENT_USER_ID);
         Settings.Secure.putFloatForUser(mResolver,
                 Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_SCALE, 2.0f,
                 CURRENT_USER_ID);
@@ -168,6 +174,10 @@ public class FullScreenMagnificationControllerTest {
     @After
     public void tearDown() {
         mMessageCapturingHandler.removeAllMessages();
+        Settings.Secure.putFloatForUser(mResolver,
+                Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_SCALE,
+                mOriginalMagnificationPersistedScale,
+                CURRENT_USER_ID);
     }
 
 
@@ -202,6 +212,7 @@ public class FullScreenMagnificationControllerTest {
         assertFalse(mFullScreenMagnificationController.isRegistered(DISPLAY_0));
         assertFalse(mFullScreenMagnificationController.isRegistered(DISPLAY_1));
 
+        // Once for each display on unregister
         verify(mMockThumbnail, times(2)).hideThumbnail();
     }
 
@@ -543,7 +554,11 @@ public class FullScreenMagnificationControllerTest {
         // The first time is triggered when the thumbnail is just created.
         // The second time is triggered when the magnification region changed.
         verify(mMockThumbnail, times(2)).setThumbnailBounds(
-                any(), anyFloat(), anyFloat(), anyFloat());
+                /* currentBounds= */ any(),
+                /* scale= */ anyFloat(),
+                /* centerX= */ anyFloat(),
+                /* centerY= */ anyFloat()
+        );
     }
 
     @Test
@@ -681,6 +696,9 @@ public class FullScreenMagnificationControllerTest {
         checkActivatedAndMagnifying(/* activated= */ true, /* magnifying= */ true, displayId);
         assertTrue(mFullScreenMagnificationController.resetIfNeeded(displayId, SERVICE_ID_2));
         checkActivatedAndMagnifying(/* activated= */ false, /* magnifying= */ false, displayId);
+
+        // Once on init before it's activated and once for reset
+        verify(mMockThumbnail, times(2)).hideThumbnail();
     }
 
     @Test
@@ -783,6 +801,9 @@ public class FullScreenMagnificationControllerTest {
         mMessageCapturingHandler.sendAllMessages();
         checkActivatedAndMagnifying(/* activated= */ false, /* magnifying= */ false, DISPLAY_0);
         checkActivatedAndMagnifying(/* activated= */ false, /* magnifying= */ false, DISPLAY_1);
+
+        // Twice for each display: once on init before it's activated and once for screen off
+        verify(mMockThumbnail, times(4)).hideThumbnail();
     }
 
     @Test
@@ -847,6 +868,15 @@ public class FullScreenMagnificationControllerTest {
         mMessageCapturingHandler.sendAllMessages();
         checkActivatedAndMagnifying(
                 /* activated= */ expectedActivated, /* magnifying= */ false, displayId);
+
+        if (expectedActivated) {
+            verify(mMockThumbnail, times(2)).setThumbnailBounds(
+                    /* currentBounds= */ any(),
+                    /* scale= */ anyFloat(),
+                    /* centerX= */ anyFloat(),
+                    /* centerY= */ anyFloat()
+            );
+        }
     }
 
     @Test
@@ -950,6 +980,13 @@ public class FullScreenMagnificationControllerTest {
                 INITIAL_BOUNDS_LOWER_RIGHT_2X_CENTER, scale);
         assertThat(endSpec, closeTo(getMagnificationSpec(scale, expectedOffsets)));
         verify(mMockWindowManager).setMagnificationSpec(eq(displayId), argThat(closeTo(endSpec)));
+
+        verify(mMockThumbnail, atLeastOnce()).setThumbnailBounds(
+                /* currentBounds= */ any(),
+                eq(scale),
+                /* centerX= */ anyFloat(),
+                /* centerY= */ anyFloat()
+        );
     }
 
     @Test
@@ -984,6 +1021,13 @@ public class FullScreenMagnificationControllerTest {
                 INITIAL_BOUNDS_LOWER_RIGHT_2X_CENTER, scale);
         assertThat(endSpec, closeTo(getMagnificationSpec(scale, expectedOffsets)));
         verify(mMockWindowManager).setMagnificationSpec(eq(displayId), argThat(closeTo(endSpec)));
+
+        verify(mMockThumbnail, atLeastOnce()).setThumbnailBounds(
+                /* currentBounds= */ any(),
+                eq(scale),
+                /* centerX= */ anyFloat(),
+                /* centerY= */ anyFloat()
+        );
     }
 
     @Test
@@ -1246,6 +1290,13 @@ public class FullScreenMagnificationControllerTest {
         callbacks.onImeWindowVisibilityChanged(true);
         mMessageCapturingHandler.sendAllMessages();
         verify(mRequestObserver).onImeWindowVisibilityChanged(eq(DISPLAY_0), eq(true));
+
+        verify(mMockThumbnail, atLeastOnce()).setThumbnailBounds(
+                /* currentBounds= */ any(),
+                /* scale= */ anyFloat(),
+                /* centerX= */ anyFloat(),
+                /* centerY= */ anyFloat()
+        );
     }
 
     @Test
@@ -1269,7 +1320,19 @@ public class FullScreenMagnificationControllerTest {
         mFullScreenMagnificationController.setAlwaysOnMagnificationEnabled(false);
         mFullScreenMagnificationController.onUserContextChanged(DISPLAY_0);
 
+        // the magnifier should be deactivated.
         verify(mRequestObserver).onFullScreenMagnificationActivationState(eq(DISPLAY_0), eq(false));
+        assertFalse(mFullScreenMagnificationController.isZoomedOutFromService(DISPLAY_0));
+
+        verify(mMockThumbnail).setThumbnailBounds(
+                /* currentBounds= */ any(),
+                /* scale= */ anyFloat(),
+                /* centerX= */ anyFloat(),
+                /* centerY= */ anyFloat()
+        );
+
+        // Once on init before it's activated and once for reset
+        verify(mMockThumbnail, times(2)).hideThumbnail();
     }
 
     @Test
@@ -1279,8 +1342,17 @@ public class FullScreenMagnificationControllerTest {
         mFullScreenMagnificationController.setAlwaysOnMagnificationEnabled(true);
         mFullScreenMagnificationController.onUserContextChanged(DISPLAY_0);
 
+        // the magnifier should be zoomed out and keep activated by service action.
         assertEquals(1.0f, mFullScreenMagnificationController.getScale(DISPLAY_0), 0);
         assertTrue(mFullScreenMagnificationController.isActivated(DISPLAY_0));
+        assertTrue(mFullScreenMagnificationController.isZoomedOutFromService(DISPLAY_0));
+
+        verify(mMockThumbnail).setThumbnailBounds(
+                /* currentBounds= */ any(),
+                /* scale= */ anyFloat(),
+                /* centerX= */ anyFloat(),
+                /* centerY= */ anyFloat()
+        );
     }
 
     private void setScaleToMagnifying() {

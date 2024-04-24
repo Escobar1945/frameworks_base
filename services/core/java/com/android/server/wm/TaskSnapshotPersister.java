@@ -16,6 +16,9 @@
 
 package com.android.server.wm;
 
+import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
+
+import android.os.Trace;
 import android.util.ArraySet;
 import android.window.TaskSnapshot;
 
@@ -64,10 +67,11 @@ class TaskSnapshotPersister extends BaseAppSnapshotPersister {
      * @param taskId The id of task that has been removed.
      * @param userId The id of the user the task belonged to.
      */
-    void onTaskRemovedFromRecents(int taskId, int userId) {
+    @Override
+    void removeSnapshot(int taskId, int userId) {
         synchronized (mLock) {
             mPersistedTaskIdsSinceLastRemoveObsolete.remove(taskId);
-            super.removeSnap(taskId, userId);
+            super.removeSnapshot(taskId, userId);
         }
     }
 
@@ -102,6 +106,7 @@ class TaskSnapshotPersister extends BaseAppSnapshotPersister {
 
         @Override
         void write() {
+            Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "RemoveObsoleteFilesQueueItem");
             final ArraySet<Integer> newPersistedTaskIds;
             synchronized (mLock) {
                 newPersistedTaskIds = new ArraySet<>(mPersistedTaskIdsSinceLastRemoveObsolete);
@@ -120,6 +125,7 @@ class TaskSnapshotPersister extends BaseAppSnapshotPersister {
                     }
                 }
             }
+            Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);
         }
 
         @VisibleForTesting

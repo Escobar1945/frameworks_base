@@ -74,7 +74,6 @@ import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.ShellCallback;
-import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.VibrationEffect;
 import android.os.vibrator.StepSegment;
@@ -96,6 +95,7 @@ import android.view.InputChannel;
 import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.InputMonitor;
+import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.PointerIcon;
 import android.view.Surface;
@@ -117,6 +117,8 @@ import com.android.server.DisplayThread;
 import com.android.server.LocalServices;
 import com.android.server.Watchdog;
 import com.android.server.input.InputManagerInternal.LidSwitchCallback;
+import com.android.server.input.debug.FocusEventDebugView;
+import com.android.server.inputmethod.InputMethodManagerInternal;
 import com.android.server.policy.WindowManagerPolicy;
 
 import libcore.io.IoUtils;
@@ -160,16 +162,13 @@ public class InputManagerService extends IInputManager.Stub
     private static final AdditionalDisplayInputProperties
             DEFAULT_ADDITIONAL_DISPLAY_INPUT_PROPERTIES = new AdditionalDisplayInputProperties();
 
-    // To disable Keyboard backlight control via Framework, run:
-    // 'adb shell setprop persist.input.keyboard_backlight_control.enabled false' (requires restart)
-    private static final boolean KEYBOARD_BACKLIGHT_CONTROL_ENABLED = SystemProperties.getBoolean(
-            "persist.input.keyboard.backlight_control.enabled", true);
-
     private final NativeInputManagerService mNative;
 
     private final Context mContext;
     private final InputManagerHandler mHandler;
     private DisplayManagerInternal mDisplayManagerInternal;
+
+    private InputMethodManagerInternal mInputMethodManagerInternal;
 
     // Context cache used for loading pointer resources.
     private Context mPointerIconDisplayContext;
@@ -296,6 +295,8 @@ public class InputManagerService extends IInputManager.Stub
     @GuardedBy("mAdditionalDisplayInputPropertiesLock")
     private final AdditionalDisplayInputProperties mCurrentDisplayProperties =
             new AdditionalDisplayInputProperties();
+    // TODO(b/293587049): Pointer Icon Refactor: There can be more than one pointer icon
+    // visible at once. Update this to support multi-pointer use cases.
     @GuardedBy("mAdditionalDisplayInputPropertiesLock")
     private int mPointerIconType = PointerIcon.TYPE_NOT_SPECIFIED;
     @GuardedBy("mAdditionalDisplayInputPropertiesLock")
@@ -384,6 +385,17 @@ public class InputManagerService extends IInputManager.Stub
     public static final int SW_CAMERA_LENS_COVER_BIT = 1 << SW_CAMERA_LENS_COVER;
     public static final int SW_MUTE_DEVICE_BIT = 1 << SW_MUTE_DEVICE;
 
+    // The following are layer numbers used for z-ordering the input overlay layers on the display.
+    // This is used for ordering layers inside {@code DisplayContent#getInputOverlayLayer()}.
+    //
+    // The layer where gesture monitors are added.
+    public static final int INPUT_OVERLAY_LAYER_GESTURE_MONITOR = 1;
+    // Place the handwriting layer above gesture monitors so that styluses cannot trigger
+    // system gestures (e.g. navigation bar, edge-back, etc) while there is an active
+    // handwriting session.
+    public static final int INPUT_OVERLAY_LAYER_HANDWRITING_SURFACE = 2;
+
+
     private final String mVelocityTrackerStrategy;
 
     /** Whether to use the dev/input/event or uevent subsystem for the audio jack. */
@@ -393,16 +405,20 @@ public class InputManagerService extends IInputManager.Stub
     @GuardedBy("mFocusEventDebugViewLock")
     @Nullable
     private FocusEventDebugView mFocusEventDebugView;
+    private boolean mShowKeyPresses = false;
+    private boolean mShowRotaryInput = false;
 
     /** Point of injection for test dependencies. */
     @VisibleForTesting
     static class Injector {
         private final Context mContext;
         private final Looper mLooper;
+        private final UEventManager mUEventManager;
 
-        Injector(Context context, Looper looper) {
+        Injector(Context context, Looper looper, UEventManager uEventManager) {
             mContext = context;
             mLooper = looper;
+            mUEventManager = uEventManager;
         }
 
         Context getContext() {
@@ -411,6 +427,10 @@ public class InputManagerService extends IInputManager.Stub
 
         Looper getLooper() {
             return mLooper;
+        }
+
+        UEventManager getUEventManager() {
+            return mUEventManager;
         }
 
         NativeInputManagerService getNativeService(InputManagerService service) {
@@ -423,7 +443,7 @@ public class InputManagerService extends IInputManager.Stub
     }
 
     public InputManagerService(Context context) {
-        this(new Injector(context, DisplayThread.get().getLooper()));
+        this(new Injector(context, DisplayThread.get().getLooper(), new UEventManager() {}));
     }
 
     @VisibleForTesting
@@ -438,11 +458,12 @@ public class InputManagerService extends IInputManager.Stub
         mSettingsObserver = new InputSettingsObserver(mContext, mHandler, this, mNative);
         mKeyboardLayoutManager = new KeyboardLayoutManager(mContext, mNative, mDataStore,
                 injector.getLooper());
-        mBatteryController = new BatteryController(mContext, mNative, injector.getLooper());
-        mKeyboardBacklightController =
-                KEYBOARD_BACKLIGHT_CONTROL_ENABLED ? new KeyboardBacklightController(mContext,
-                        mNative, mDataStore, injector.getLooper())
-                        : new KeyboardBacklightControllerInterface() {};
+        mBatteryController = new BatteryController(mContext, mNative, injector.getLooper(),
+                injector.getUEventManager());
+        mKeyboardBacklightController = InputFeatureFlagProvider.isKeyboardBacklightControlEnabled()
+                ? new KeyboardBacklightController(mContext, mNative, mDataStore,
+                        injector.getLooper(), injector.getUEventManager())
+                : new KeyboardBacklightControllerInterface() {};
         mKeyRemapper = new KeyRemapper(mContext, mNative, mDataStore, injector.getLooper());
 
         mUseDevInputEventForAudioJack =
@@ -509,6 +530,8 @@ public class InputManagerService extends IInputManager.Stub
         }
 
         mDisplayManagerInternal = LocalServices.getService(DisplayManagerInternal.class);
+        mInputMethodManagerInternal =
+                LocalServices.getService(InputMethodManagerInternal.class);
 
         mSettingsObserver.registerAndUpdate();
 
@@ -661,6 +684,12 @@ public class InputManagerService extends IInputManager.Stub
             return KEYCODE_UNKNOWN;
         }
         return mNative.getKeyCodeForKeyLocation(deviceId, locationKeyCode);
+    }
+
+    @Override // Binder call
+    public KeyCharacterMap getKeyCharacterMap(@NonNull String layoutDescriptor) {
+        Objects.requireNonNull(layoutDescriptor, "layoutDescriptor must not be null");
+        return mKeyboardLayoutManager.getKeyCharacterMap(layoutDescriptor);
     }
 
     /**
@@ -1729,6 +1758,21 @@ public class InputManagerService extends IInputManager.Stub
         }
     }
 
+    // Binder call
+    @Override
+    public boolean setPointerIcon(PointerIcon icon, int displayId, int deviceId, int pointerId,
+            IBinder inputToken) {
+        Objects.requireNonNull(icon);
+        synchronized (mAdditionalDisplayInputPropertiesLock) {
+            mPointerIconType = icon.getType();
+            mPointerIcon = mPointerIconType == PointerIcon.TYPE_CUSTOM ? icon : null;
+
+            if (!mCurrentDisplayProperties.pointerIconVisible) return false;
+
+            return mNative.setPointerIcon(icon, displayId, deviceId, pointerId, inputToken);
+        }
+    }
+
     /**
      * Add a runtime association between the input port and the display port. This overrides any
      * static associations.
@@ -2470,7 +2514,7 @@ public class InputManagerService extends IInputManager.Stub
     private int interceptKeyBeforeQueueing(KeyEvent event, int policyFlags) {
         synchronized (mFocusEventDebugViewLock) {
             if (mFocusEventDebugView != null) {
-                mFocusEventDebugView.reportEvent(event);
+                mFocusEventDebugView.reportKeyEvent(event);
             }
         }
         return mWindowManagerCallbacks.interceptKeyBeforeQueueing(event, policyFlags);
@@ -2560,12 +2604,17 @@ public class InputManagerService extends IInputManager.Stub
     }
 
     /**
-     * Ports are highly platform-specific, so only allow these to be specified in the vendor
+     * Ports are highly platform-specific, so allow these to be specified in the odm/vendor
      * directory.
      */
     private static Map<String, Integer> loadStaticInputPortAssociations() {
-        final File baseDir = Environment.getVendorDirectory();
-        final File confFile = new File(baseDir, PORT_ASSOCIATIONS_PATH);
+        File baseDir = Environment.getOdmDirectory();
+        File confFile = new File(baseDir, PORT_ASSOCIATIONS_PATH);
+
+        if (!confFile.exists()) {
+            baseDir = Environment.getVendorDirectory();
+            confFile = new File(baseDir, PORT_ASSOCIATIONS_PATH);
+        }
 
         try (final InputStream stream = new FileInputStream(confFile)) {
             return ConfigurationProcessor.processInputPortAssociations(stream);
@@ -2633,18 +2682,6 @@ public class InputManagerService extends IInputManager.Stub
      */
     public boolean canDispatchToDisplay(int deviceId, int displayId) {
         return mNative.canDispatchToDisplay(deviceId, displayId);
-    }
-
-    // Native callback.
-    @SuppressWarnings("unused")
-    private int getKeyRepeatTimeout() {
-        return ViewConfiguration.getKeyRepeatTimeout();
-    }
-
-    // Native callback.
-    @SuppressWarnings("unused")
-    private int getKeyRepeatDelay() {
-        return ViewConfiguration.getKeyRepeatDelay();
     }
 
     // Native callback.
@@ -2731,11 +2768,12 @@ public class InputManagerService extends IInputManager.Stub
 
     // Native callback.
     @SuppressWarnings("unused")
-    private String[] getKeyboardLayoutOverlay(InputDeviceIdentifier identifier) {
+    private String[] getKeyboardLayoutOverlay(InputDeviceIdentifier identifier, String languageTag,
+            String layoutType) {
         if (!mSystemReady) {
             return null;
         }
-        return mKeyboardLayoutManager.getKeyboardLayoutOverlay(identifier);
+        return mKeyboardLayoutManager.getKeyboardLayoutOverlay(identifier, languageTag, layoutType);
     }
 
     @EnforcePermission(Manifest.permission.REMAP_MODIFIER_KEYS)
@@ -2789,6 +2827,13 @@ public class InputManagerService extends IInputManager.Stub
                         yPosition)).sendToTarget();
     }
 
+    // Native callback.
+    @SuppressWarnings("unused")
+    boolean isInputMethodConnectionActive() {
+        return mInputMethodManagerInternal != null
+                && mInputMethodManagerInternal.isAnyInputConnectionActive();
+    }
+
     /**
      * Callback interface implemented by the Window Manager.
      */
@@ -2797,6 +2842,11 @@ public class InputManagerService extends IInputManager.Stub
          * This callback is invoked when the configuration changes.
          */
         void notifyConfigurationChanged();
+
+        /**
+         * This callback is invoked when the pointer location changes.
+         */
+        void notifyPointerLocationChanged(boolean pointerLocationEnabled);
 
         /**
          * This callback is invoked when the camera lens cover switch changes state.
@@ -3380,14 +3430,49 @@ public class InputManagerService extends IInputManager.Stub
         }
     }
 
-    void updateFocusEventDebugViewEnabled(boolean enabled) {
+    void updatePointerLocationEnabled(boolean enabled) {
+        mWindowManagerCallbacks.notifyPointerLocationChanged(enabled);
+    }
+
+    void updateShowKeyPresses(boolean enabled) {
+        if (mShowKeyPresses == enabled) {
+            return;
+        }
+
+        mShowKeyPresses = enabled;
+        updateFocusEventDebugViewEnabled();
+
+        synchronized (mFocusEventDebugViewLock) {
+            if (mFocusEventDebugView != null) {
+                mFocusEventDebugView.updateShowKeyPresses(enabled);
+            }
+        }
+    }
+
+    void updateShowRotaryInput(boolean enabled) {
+        if (mShowRotaryInput == enabled) {
+            return;
+        }
+
+        mShowRotaryInput = enabled;
+        updateFocusEventDebugViewEnabled();
+
+        synchronized (mFocusEventDebugViewLock) {
+            if (mFocusEventDebugView != null) {
+                mFocusEventDebugView.updateShowRotaryInput(enabled);
+            }
+        }
+    }
+
+    private void updateFocusEventDebugViewEnabled() {
+        boolean enabled = mShowKeyPresses || mShowRotaryInput;
         FocusEventDebugView view;
         synchronized (mFocusEventDebugViewLock) {
             if (enabled == (mFocusEventDebugView != null)) {
                 return;
             }
             if (enabled) {
-                mFocusEventDebugView = new FocusEventDebugView(mContext);
+                mFocusEventDebugView = new FocusEventDebugView(mContext, this);
                 view = mFocusEventDebugView;
             } else {
                 view = mFocusEventDebugView;
@@ -3417,6 +3502,13 @@ public class InputManagerService extends IInputManager.Stub
         lp.setTitle("FocusEventDebugView - display " + mContext.getDisplayId());
         lp.inputFeatures |= WindowManager.LayoutParams.INPUT_FEATURE_NO_INPUT_CHANNEL;
         wm.addView(view, lp);
+    }
+
+    /**
+     * Sets Accessibility bounce keys threshold in milliseconds.
+     */
+    public void setAccessibilityBounceKeysThreshold(int thresholdTimeMs) {
+        mNative.setAccessibilityBounceKeysThreshold(thresholdTimeMs);
     }
 
     interface KeyboardBacklightControllerInterface {

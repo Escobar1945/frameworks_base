@@ -16,8 +16,10 @@
 
 package com.android.server.biometrics.sensors.face.aidl;
 
+import static android.hardware.biometrics.BiometricConstants.BIOMETRIC_ERROR_CANCELED;
 import static android.hardware.biometrics.BiometricFaceConstants.FACE_ERROR_LOCKOUT;
 import static android.hardware.biometrics.BiometricFaceConstants.FACE_ERROR_LOCKOUT_PERMANENT;
+
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -34,6 +36,8 @@ import static org.mockito.Mockito.when;
 import android.app.ActivityManager;
 import android.app.ActivityTaskManager;
 import android.content.ComponentName;
+import android.hardware.biometrics.BiometricConstants;
+import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.common.AuthenticateReason;
 import android.hardware.biometrics.common.ICancellationSignal;
 import android.hardware.biometrics.common.OperationContext;
@@ -56,6 +60,7 @@ import com.android.server.biometrics.log.OperationContextExt;
 import com.android.server.biometrics.sensors.AuthSessionCoordinator;
 import com.android.server.biometrics.sensors.ClientMonitorCallback;
 import com.android.server.biometrics.sensors.ClientMonitorCallbackConverter;
+import com.android.server.biometrics.sensors.LockoutTracker;
 import com.android.server.biometrics.sensors.face.UsageStats;
 
 import org.junit.Before;
@@ -100,13 +105,17 @@ public class FaceAuthenticationClientTest {
     @Mock
     private ClientMonitorCallback mCallback;
     @Mock
-    private Sensor.HalSessionCallback mHalSessionCallback;
+    private AidlResponseHandler mAidlResponseHandler;
     @Mock
     private ActivityTaskManager mActivityTaskManager;
     @Mock
     private ICancellationSignal mCancellationSignal;
     @Mock
     private AuthSessionCoordinator mAuthSessionCoordinator;
+    @Mock
+    private BiometricManager mBiometricManager;
+    @Mock
+    private LockoutTracker mLockoutTracker;
     @Captor
     private ArgumentCaptor<OperationContextExt> mOperationContextCaptor;
     @Captor
@@ -117,6 +126,7 @@ public class FaceAuthenticationClientTest {
 
     @Before
     public void setup() {
+        mContext.addMockSystemService(BiometricManager.class, mBiometricManager);
         when(mBiometricContext.updateContext(any(), anyBoolean())).thenAnswer(
                 i -> i.getArgument(0));
         when(mBiometricContext.getAuthSessionCoordinator()).thenReturn(mAuthSessionCoordinator);
@@ -205,17 +215,88 @@ public class FaceAuthenticationClientTest {
         client.onAuthenticated(new Face("friendly", 1 /* faceId */, 2 /* deviceId */),
                 true /* authenticated */, new ArrayList<>());
 
-        verify(mCancellationSignal).cancel();
+        verify(mCancellationSignal, never()).cancel();
+        verify(mClientMonitorCallbackConverter)
+                .onError(anyInt(), anyInt(), eq(BIOMETRIC_ERROR_CANCELED), anyInt());
+    }
+
+    @Test
+    public void testOnAuthenticatedFalseWhenListenerIsNull() throws RemoteException {
+        final FaceAuthenticationClient client = createClientWithNullListener();
+        client.start(mCallback);
+        client.onAuthenticated(new Face("friendly", 1 /* faceId */, 2 /* deviceId */),
+                false /* authenticated */, new ArrayList<>());
+
+        verify(mCallback).onClientFinished(client, true);
+    }
+
+    @Test
+    public void testOnAuthenticatedTrueWhenListenerIsNull() throws RemoteException {
+        final FaceAuthenticationClient client = createClientWithNullListener();
+        client.start(mCallback);
+        client.onAuthenticated(new Face("friendly", 1 /* faceId */, 2 /* deviceId */),
+                true /* authenticated */, new ArrayList<>());
+
+        verify(mCallback).onClientFinished(client, true);
+    }
+
+    @Test
+    public void authWithNoLockout() throws RemoteException {
+        when(mLockoutTracker.getLockoutModeForUser(anyInt())).thenReturn(
+                LockoutTracker.LOCKOUT_NONE);
+
+        final FaceAuthenticationClient client = createClientWithLockoutTracker(mLockoutTracker);
+        client.start(mCallback);
+
+        verify(mHal).authenticate(OP_ID);
+    }
+
+    @Test
+    public void authWithLockout() throws RemoteException {
+        when(mLockoutTracker.getLockoutModeForUser(anyInt())).thenReturn(
+                LockoutTracker.LOCKOUT_PERMANENT);
+
+        final FaceAuthenticationClient client = createClientWithLockoutTracker(mLockoutTracker);
+        client.start(mCallback);
+
+        verify(mClientMonitorCallbackConverter).onError(anyInt(), anyInt(),
+                eq(BiometricConstants.BIOMETRIC_ERROR_LOCKOUT_PERMANENT), anyInt());
+        verify(mHal, never()).authenticate(anyInt());
     }
 
     private FaceAuthenticationClient createClient() throws RemoteException {
-        return createClient(2 /* version */);
+        return createClient(2 /* version */, mClientMonitorCallbackConverter,
+                false /* allowBackgroundAuthentication */,
+                null /* lockoutTracker */);
+    }
+
+    private FaceAuthenticationClient createClientWithNullListener() throws RemoteException {
+        return createClient(2 /* version */, null /* listener */,
+                true /* allowBackgroundAuthentication */,
+                null /* lockoutTracker */);
     }
 
     private FaceAuthenticationClient createClient(int version) throws RemoteException {
+        return createClient(version, mClientMonitorCallbackConverter,
+                false /* allowBackgroundAuthentication */,
+                null /* lockoutTracker */);
+    }
+
+    private FaceAuthenticationClient createClientWithLockoutTracker(LockoutTracker lockoutTracker)
+            throws RemoteException {
+        return createClient(0 /* version */,
+                mClientMonitorCallbackConverter,
+                true /* allowBackgroundAuthentication */,
+                lockoutTracker);
+    }
+
+    private FaceAuthenticationClient createClient(int version,
+            ClientMonitorCallbackConverter listener,
+            boolean allowBackgroundAuthentication,
+            LockoutTracker lockoutTracker) throws RemoteException {
         when(mHal.getInterfaceVersion()).thenReturn(version);
 
-        final AidlSession aidl = new AidlSession(version, mHal, USER_ID, mHalSessionCallback);
+        final AidlSession aidl = new AidlSession(version, mHal, USER_ID, mAidlResponseHandler);
         final FaceAuthenticateOptions options = new FaceAuthenticateOptions.Builder()
                 .setOpPackageName("test-owner")
                 .setUserId(USER_ID)
@@ -225,11 +306,11 @@ public class FaceAuthenticationClientTest {
                         FaceAuthenticateOptions.AUTHENTICATE_REASON_ASSISTANT_VISIBLE)
                 .build();
         return new FaceAuthenticationClient(mContext, () -> aidl, mToken,
-                2 /* requestId */, mClientMonitorCallbackConverter, OP_ID,
+                2 /* requestId */, listener, OP_ID,
                 false /* restricted */, options, 4 /* cookie */,
                 false /* requireConfirmation */,
                 mBiometricLogger, mBiometricContext, true /* isStrongBiometric */,
-                mUsageStats, null /* mLockoutCache */, false /* allowBackgroundAuthentication */,
+                mUsageStats, lockoutTracker, allowBackgroundAuthentication,
                 null /* sensorPrivacyManager */, 0 /* biometricStrength */) {
             @Override
             protected ActivityTaskManager getActivityTaskManager() {

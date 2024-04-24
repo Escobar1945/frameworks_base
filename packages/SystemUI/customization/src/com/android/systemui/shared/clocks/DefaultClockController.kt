@@ -24,16 +24,19 @@ import android.view.View
 import android.widget.FrameLayout
 import androidx.annotation.VisibleForTesting
 import com.android.systemui.customization.R
-import com.android.systemui.log.LogBuffer
-import com.android.systemui.plugins.ClockAnimations
-import com.android.systemui.plugins.ClockConfig
-import com.android.systemui.plugins.ClockController
-import com.android.systemui.plugins.ClockEvents
-import com.android.systemui.plugins.ClockFaceConfig
-import com.android.systemui.plugins.ClockFaceController
-import com.android.systemui.plugins.ClockFaceEvents
-import com.android.systemui.plugins.ClockSettings
-import com.android.systemui.plugins.WeatherData
+import com.android.systemui.log.core.MessageBuffer
+import com.android.systemui.plugins.clocks.AlarmData
+import com.android.systemui.plugins.clocks.ClockAnimations
+import com.android.systemui.plugins.clocks.ClockConfig
+import com.android.systemui.plugins.clocks.ClockController
+import com.android.systemui.plugins.clocks.ClockEvents
+import com.android.systemui.plugins.clocks.ClockFaceConfig
+import com.android.systemui.plugins.clocks.ClockFaceController
+import com.android.systemui.plugins.clocks.ClockFaceEvents
+import com.android.systemui.plugins.clocks.ClockSettings
+import com.android.systemui.plugins.clocks.DefaultClockFaceLayout
+import com.android.systemui.plugins.clocks.WeatherData
+import com.android.systemui.plugins.clocks.ZenData
 import java.io.PrintWriter
 import java.util.Locale
 import java.util.TimeZone
@@ -52,6 +55,7 @@ class DefaultClockController(
     private val resources: Resources,
     private val settings: ClockSettings?,
     private val hasStepClockAnimation: Boolean = false,
+    private val migratedClocks: Boolean = false,
 ) : ClockController {
     override val smallClock: DefaultClockFaceController
     override val largeClock: LargeClockFaceController
@@ -62,9 +66,16 @@ class DefaultClockController(
     private val burmeseLineSpacing =
         resources.getFloat(R.dimen.keyguard_clock_line_spacing_scale_burmese)
     private val defaultLineSpacing = resources.getFloat(R.dimen.keyguard_clock_line_spacing_scale)
+    protected var onSecondaryDisplay: Boolean = false
 
     override val events: DefaultClockEvents
-    override val config = ClockConfig()
+    override val config: ClockConfig by lazy {
+        ClockConfig(
+            DEFAULT_CLOCK_ID,
+            resources.getString(R.string.clock_default_name),
+            resources.getString(R.string.clock_default_description)
+        )
+    }
 
     init {
         val parent = FrameLayout(ctx)
@@ -107,11 +118,12 @@ class DefaultClockController(
         protected var targetRegion: Rect? = null
 
         override val config = ClockFaceConfig()
+        override val layout = DefaultClockFaceLayout(view)
 
-        override var logBuffer: LogBuffer?
-            get() = view.logBuffer
+        override var messageBuffer: MessageBuffer?
+            get() = view.messageBuffer
             set(value) {
-                view.logBuffer = value
+                view.messageBuffer = value
             }
 
         override var animations: DefaultClockAnimations = DefaultClockAnimations(view, 0f, 0f)
@@ -141,6 +153,11 @@ class DefaultClockController(
                 override fun onFontSettingChanged(fontSizePx: Float) {
                     view.setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSizePx)
                     recomputePadding(targetRegion)
+                }
+
+                override fun onSecondaryDisplayChanged(onSecondaryDisplay: Boolean) {
+                    this@DefaultClockController.onSecondaryDisplay = onSecondaryDisplay
+                    recomputePadding(null)
                 }
             }
 
@@ -172,6 +189,7 @@ class DefaultClockController(
         view: AnimatableClockView,
         seedColor: Int?,
     ) : DefaultClockFaceController(view, seedColor) {
+        override val layout = DefaultClockFaceLayout(view)
         override val config =
             ClockFaceConfig(hasCustomPositionUpdatedAnimation = hasStepClockAnimation)
 
@@ -180,15 +198,24 @@ class DefaultClockController(
         }
 
         override fun recomputePadding(targetRegion: Rect?) {
+            if (migratedClocks) {
+                return
+            }
             // We center the view within the targetRegion instead of within the parent
             // view by computing the difference and adding that to the padding.
-            val parent = view.parent
-            val yDiff =
-                if (targetRegion != null && parent is View && parent.isLaidOut())
-                    targetRegion.centerY() - parent.height / 2f
-                else 0f
             val lp = view.getLayoutParams() as FrameLayout.LayoutParams
-            lp.topMargin = (-0.5f * view.bottom + yDiff).toInt()
+            lp.topMargin =
+                if (onSecondaryDisplay) {
+                    // On the secondary display we don't want any additional top/bottom margin.
+                    0
+                } else {
+                    val parent = view.parent
+                    val yDiff =
+                        if (targetRegion != null && parent is View && parent.isLaidOut())
+                            targetRegion.centerY() - parent.height / 2f
+                        else 0f
+                    (-0.5f * view.bottom + yDiff).toInt()
+                }
             view.setLayoutParams(lp)
         }
 
@@ -230,6 +257,8 @@ class DefaultClockController(
         }
 
         override fun onWeatherDataChanged(data: WeatherData) {}
+        override fun onAlarmDataChanged(data: AlarmData) {}
+        override fun onZenDataChanged(data: ZenData) {}
     }
 
     open inner class DefaultClockAnimations(

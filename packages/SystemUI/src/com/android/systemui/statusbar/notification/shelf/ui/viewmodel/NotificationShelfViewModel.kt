@@ -16,21 +16,23 @@
 
 package com.android.systemui.statusbar.notification.shelf.ui.viewmodel
 
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.statusbar.NotificationShelf
+import com.android.systemui.statusbar.notification.icon.ui.viewmodel.NotificationIconContainerShelfViewModel
 import com.android.systemui.statusbar.notification.row.ui.viewmodel.ActivatableNotificationViewModel
 import com.android.systemui.statusbar.notification.shelf.domain.interactor.NotificationShelfInteractor
-import com.android.systemui.statusbar.phone.dagger.CentralSurfacesComponent.CentralSurfacesScope
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /** ViewModel for [NotificationShelf]. */
-@CentralSurfacesScope
+@SysUISingleton
 class NotificationShelfViewModel
 @Inject
 constructor(
     private val interactor: NotificationShelfInteractor,
     activatableViewModel: ActivatableNotificationViewModel,
+    val icons: NotificationIconContainerShelfViewModel,
 ) : ActivatableNotificationViewModel by activatableViewModel {
     /** Is the shelf allowed to be clickable when it has content? */
     val isClickable: Flow<Boolean>

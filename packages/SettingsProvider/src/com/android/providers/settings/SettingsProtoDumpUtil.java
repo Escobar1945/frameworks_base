@@ -1813,6 +1813,9 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ACCESSIBILITY_BUTTON_TARGETS,
                 SecureSettingsProto.Accessibility.BUTTON_TARGETS);
         dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_QS_TARGETS,
+                SecureSettingsProto.Accessibility.QS_TARGETS);
+        dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_CAPABILITY,
                 SecureSettingsProto.Accessibility.ACCESSIBILITY_MAGNIFICATION_CAPABILITY);
         dumpSetting(s, p,
@@ -1842,9 +1845,17 @@ class SettingsProtoDumpUtil {
                 SecureSettingsProto.Accessibility
                         .ACCESSIBILITY_MAGNIFICATION_ALWAYS_ON_ENABLED);
         dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_FORCE_INVERT_COLOR_ENABLED,
+                SecureSettingsProto.Accessibility
+                        .ACCESSIBILITY_FORCE_INVERT_COLOR_ENABLED);
+        dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_JOYSTICK_ENABLED,
                 SecureSettingsProto.Accessibility
                         .ACCESSIBILITY_MAGNIFICATION_JOYSTICK_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_MAGNIFICATION_TWO_FINGER_TRIPLE_TAP_ENABLED,
+                SecureSettingsProto.Accessibility
+                        .ACCESSIBILITY_MAGNIFICATION_TWO_FINGER_TRIPLE_TAP_ENABLED);
         dumpSetting(s, p,
                 Settings.Secure.HEARING_AID_RINGTONE_ROUTING,
                 SecureSettingsProto.Accessibility.HEARING_AID_RINGTONE_ROUTING);
@@ -1926,6 +1937,12 @@ class SettingsProtoDumpUtil {
         dumpSetting(s, p,
                 Settings.Secure.ASSIST_LONG_PRESS_HOME_ENABLED,
                 SecureSettingsProto.Assist.LONG_PRESS_HOME_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.SEARCH_PRESS_HOLD_NAV_HANDLE_ENABLED,
+                SecureSettingsProto.Assist.SEARCH_PRESS_HOLD_NAV_HANDLE_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.SEARCH_LONG_PRESS_HOME_ENABLED,
+                SecureSettingsProto.Assist.SEARCH_LONG_PRESS_HOME_ENABLED);
         p.end(assistToken);
 
         final long assistHandlesToken = p.start(SecureSettingsProto.ASSIST_HANDLES);
@@ -2120,6 +2137,15 @@ class SettingsProtoDumpUtil {
         dumpSetting(s, p,
                 Settings.Secure.ENHANCED_VOICE_PRIVACY_ENABLED,
                 SecureSettingsProto.ENHANCED_VOICE_PRIVACY_ENABLED);
+
+        final long evenDimmerToken = p.start(SecureSettingsProto.EVEN_DIMMER);
+        dumpSetting(s, p,
+                Settings.Secure.EVEN_DIMMER_ACTIVATED,
+                SecureSettingsProto.EvenDimmer.EVEN_DIMMER_ACTIVATED);
+        dumpSetting(s, p,
+                Settings.Secure.EVEN_DIMMER_MIN_NITS,
+                SecureSettingsProto.EvenDimmer.EVEN_DIMMER_MIN_NITS);
+        p.end(evenDimmerToken);
 
         final long gestureToken = p.start(SecureSettingsProto.GESTURE);
         dumpSetting(s, p,
@@ -3059,7 +3085,7 @@ class SettingsProtoDumpUtil {
                 Settings.System.APPLY_RAMPING_RINGER,
                 SystemSettingsProto.APPLY_RAMPING_RINGER);
 
-        // Please insert new settings using the same order as in SecureSettingsProto.
+        // Please insert new settings using the same order as in SystemSettingsProto.
 
         // The rest of the settings were moved to Settings.Secure, and are thus excluded here since
         // they're deprecated from Settings.System.
@@ -3097,8 +3123,8 @@ class SettingsProtoDumpUtil {
         // The rest of the settings were moved to Settings.Secure, and are thus excluded here since
         // they're deprecated from Settings.System.
 
-        // Please insert new settings using the same order as in SecureSettingsProto.
+        // Please insert new settings using the same order as in SystemSettingsProto.
         p.end(token);
-        // Please insert new settings using the same order as in SecureSettingsProto.
+        // Please insert new settings using the same order as in SystemSettingsProto.
     }
 }

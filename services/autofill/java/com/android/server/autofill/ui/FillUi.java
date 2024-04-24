@@ -91,6 +91,7 @@ final class FillUi {
         void requestShowFillUi(int width, int height,
                 IAutofillWindowPresenter windowPresenter);
         void requestHideFillUi();
+        void requestHideFillUiWhenDestroyed();
         void startIntentSender(IntentSender intentSender);
         void dispatchUnhandledKey(KeyEvent keyEvent);
         void cancelSession();
@@ -126,6 +127,8 @@ final class FillUi {
 
     private final int mThemeId;
 
+    private int mMaxInputLengthForAutofill;
+
     public static boolean isFullScreen(Context context) {
         if (sFullScreenMode != null) {
             if (sVerbose) Slog.v(TAG, "forcing full-screen mode to " + sFullScreenMode);
@@ -137,7 +140,8 @@ final class FillUi {
     FillUi(@NonNull Context context, @NonNull FillResponse response,
             @NonNull AutofillId focusedViewId, @Nullable String filterText,
             @NonNull OverlayControl overlayControl, @NonNull CharSequence serviceLabel,
-            @NonNull Drawable serviceIcon, boolean nightMode, @NonNull Callback callback) {
+            @NonNull Drawable serviceIcon, boolean nightMode, int maxInputLengthForAutofill,
+            @NonNull Callback callback) {
         if (sVerbose) {
             Slogf.v(TAG, "nightMode: %b displayId: %d", nightMode, context.getDisplayId());
         }
@@ -145,6 +149,7 @@ final class FillUi {
         mCallback = callback;
         mFullScreen = isFullScreen(context);
         mContext = new ContextThemeWrapper(context, mThemeId);
+        mMaxInputLengthForAutofill = maxInputLengthForAutofill;
 
         final LayoutInflater inflater = LayoutInflater.from(mContext);
 
@@ -425,10 +430,17 @@ final class FillUi {
             if (mDestroyed) {
                 return;
             }
+            final int size = mFilterText == null ? 0 : mFilterText.length();
             if (count <= 0) {
                 if (sDebug) {
-                    final int size = mFilterText == null ? 0 : mFilterText.length();
                     Slog.d(TAG, "No dataset matches filter with " + size + " chars");
+                }
+                mCallback.requestHideFillUi();
+            } else if (size > mMaxInputLengthForAutofill) {
+                // Do not show suggestion if user entered more than the maximum suggesiton length
+                if (sDebug) {
+                    Slog.d(TAG, "Not showing fill UI because user entered more than "
+                            + mMaxInputLengthForAutofill + " characters");
                 }
                 mCallback.requestHideFillUi();
             } else {
@@ -482,7 +494,7 @@ final class FillUi {
         }
         mCallback.onDestroy();
         if (notifyClient) {
-            mCallback.requestHideFillUi();
+            mCallback.requestHideFillUiWhenDestroyed();
         }
         mDestroyed = true;
     }

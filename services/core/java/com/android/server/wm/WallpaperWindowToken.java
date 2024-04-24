@@ -42,6 +42,12 @@ class WallpaperWindowToken extends WindowToken {
     private static final String TAG = TAG_WITH_CLASS_NAME ? "WallpaperWindowToken" : TAG_WM;
 
     private boolean mShowWhenLocked = false;
+    float mWallpaperX = -1;
+    float mWallpaperY = -1;
+    float mWallpaperXStep = -1;
+    float mWallpaperYStep = -1;
+    int mWallpaperDisplayOffsetX = Integer.MIN_VALUE;
+    int mWallpaperDisplayOffsetY = Integer.MIN_VALUE;
 
     WallpaperWindowToken(WindowManagerService service, IBinder token, boolean explicit,
             DisplayContent dc, boolean ownerCanManageAppTokens) {
@@ -76,18 +82,16 @@ class WallpaperWindowToken extends WindowToken {
             return;
         }
         mShowWhenLocked = showWhenLocked;
-        if (mDisplayContent.mWallpaperController.mIsLockscreenLiveWallpaperEnabled) {
-            // Move the window token to the front (private) or back (showWhenLocked). This is
-            // possible
-            // because the DisplayArea underneath TaskDisplayArea only contains TYPE_WALLPAPER
-            // windows.
-            final int position = showWhenLocked ? POSITION_BOTTOM : POSITION_TOP;
+        // Move the window token to the front (private) or back (showWhenLocked). This is
+        // possible
+        // because the DisplayArea underneath TaskDisplayArea only contains TYPE_WALLPAPER
+        // windows.
+        final int position = showWhenLocked ? POSITION_BOTTOM : POSITION_TOP;
 
-            // Note: Moving all the way to the front or back breaks ordering based on addition
-            // times.
-            // We should never have more than one non-animating token of each type.
-            getParent().positionChildAt(position, this /* child */, false /*includingParents */);
-        }
+        // Note: Moving all the way to the front or back breaks ordering based on addition
+        // times.
+        // We should never have more than one non-animating token of each type.
+        getParent().positionChildAt(position, this /* child */, false /*includingParents */);
     }
 
     boolean canShowWhenLocked() {
@@ -111,7 +115,8 @@ class WallpaperWindowToken extends WindowToken {
         final WallpaperController wallpaperController = mDisplayContent.mWallpaperController;
         for (int wallpaperNdx = mChildren.size() - 1; wallpaperNdx >= 0; wallpaperNdx--) {
             final WindowState wallpaper = mChildren.get(wallpaperNdx);
-            if (wallpaperController.updateWallpaperOffset(wallpaper, sync)) {
+            if (wallpaperController.updateWallpaperOffset(wallpaper,
+                    sync && !mWmService.mFlags.mWallpaperOffsetAsync)) {
                 // We only want to be synchronous with one wallpaper.
                 sync = false;
             }
@@ -126,20 +131,6 @@ class WallpaperWindowToken extends WindowToken {
             final WindowState windowState = mChildren.get(ndx);
             windowState.startAnimation(anim);
         }
-    }
-
-    /**
-     * Update the visibility of the token to {@param visible}. If a transition will collect the
-     * wallpaper, then the visibility will be committed during the execution of the transition.
-     *
-     * waitingToShow is reset at the beginning of the transition:
-     * {@link Transition#onTransactionReady(int, SurfaceControl.Transaction)}
-     */
-    void updateWallpaperWindowsInTransition(boolean visible) {
-        if (mTransitionController.isCollecting() && mVisibleRequested != visible) {
-            waitingToShow = true;
-        }
-        updateWallpaperWindows(visible);
     }
 
     void updateWallpaperWindows(boolean visible) {
@@ -170,7 +161,7 @@ class WallpaperWindowToken extends WindowToken {
                 linkFixedRotationTransform(wallpaperTarget.mToken);
             }
         }
-        if (mTransitionController.isShellTransitionsEnabled()) {
+        if (mTransitionController.inTransition(this)) {
             // If wallpaper is in transition, setVisible() will be called from commitVisibility()
             // when finishing transition. Otherwise commitVisibility() is already called from above
             // setVisibility().
@@ -212,12 +203,9 @@ class WallpaperWindowToken extends WindowToken {
         commitVisibility(visible);
     }
 
-    /**
-     * Commits the visibility of this token. This will directly update the visibility unless the
-     * wallpaper is in a transition.
-     */
+    /** Commits the visibility of this token. This will directly update the visibility. */
     void commitVisibility(boolean visible) {
-        if (visible == isVisible() || waitingToShow) return;
+        if (visible == isVisible()) return;
 
         ProtoLog.v(WM_DEBUG_APP_TRANSITIONS,
                 "commitVisibility: %s: visible=%b mVisibleRequested=%b", this,

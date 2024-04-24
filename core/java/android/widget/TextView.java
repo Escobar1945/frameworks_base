@@ -28,11 +28,15 @@ import static android.view.accessibility.AccessibilityNodeInfo.EXTRA_DATA_TEXT_C
 import static android.view.accessibility.AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY;
 import static android.view.inputmethod.CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION;
 
+import static com.android.text.flags.Flags.FLAG_FIX_LINE_HEIGHT_FOR_LOCALE;
+import static com.android.text.flags.Flags.FLAG_USE_BOUNDS_FOR_WIDTH;
+
 import android.R;
 import android.annotation.CallSuper;
 import android.annotation.CheckResult;
 import android.annotation.ColorInt;
 import android.annotation.DrawableRes;
+import android.annotation.FlaggedApi;
 import android.annotation.FloatRange;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
@@ -100,6 +104,7 @@ import android.os.SystemClock;
 import android.os.UserHandle;
 import android.provider.Settings;
 import android.text.BoringLayout;
+import android.text.ClientFlags;
 import android.text.DynamicLayout;
 import android.text.Editable;
 import android.text.GetChars;
@@ -156,7 +161,6 @@ import android.text.util.Linkify;
 import android.util.ArraySet;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
-import android.util.FeatureFlagUtils;
 import android.util.IntArray;
 import android.util.Log;
 import android.util.SparseIntArray;
@@ -524,6 +528,15 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     @EnabledSince(targetSdkVersion = Build.VERSION_CODES.P)
     public static final long STATICLAYOUT_FALLBACK_LINESPACING = 37756858; // buganizer id
 
+
+    /**
+     * This change ID enables the bounding box based layout.
+     * @hide
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = VERSION_CODES.VANILLA_ICE_CREAM)
+    public static final long USE_BOUNDS_FOR_WIDTH = 63938206;  // buganizer id
+
     // System wide time for last cut, copy or text changed action.
     static long sLastCutCopyOrTextChangedTime;
 
@@ -554,6 +567,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     @UnsupportedAppUsage
     private float mShadowDy;
     private int mShadowColor;
+
+    private int mLastOrientation;
 
     private boolean mPreDrawRegistered;
     private boolean mPreDrawListenerDetached;
@@ -831,11 +846,6 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     private int mLineBreakStyle = DEFAULT_LINE_BREAK_STYLE;
     private int mLineBreakWordStyle = DEFAULT_LINE_BREAK_WORD_STYLE;
 
-    // The auto option for LINE_BREAK_WORD_STYLE_PHRASE may not be applied in recycled view due to
-    // one-way flag flipping. This is a tentative limitation during experiment and will not have the
-    // issue once this is finalized to LINE_BREAK_WORD_STYLE_PHRASE_AUTO option.
-    private boolean mUserSpeficiedLineBreakwordStyle = false;
-
     // This is used to reflect the current user preference for changing font weight and making text
     // more bold.
     private int mFontWeightAdjustment;
@@ -854,6 +864,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     private int mUseFallbackLineSpacing;
     // True if the view text can be padded for compat reasons, when the view is translated.
     private final boolean mUseTextPaddingForUiTranslation;
+
+    private boolean mUseBoundsForWidth;
+    @Nullable private Paint.FontMetrics mMinimumFontMetrics;
 
     @ViewDebug.ExportedProperty(category = "text")
     @UnsupportedAppUsage
@@ -1184,6 +1197,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         mBreakStrategy = Layout.BREAK_STRATEGY_SIMPLE;
         mHyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NONE;
         mJustificationMode = Layout.JUSTIFICATION_MODE_NONE;
+        mLastOrientation = getResources().getConfiguration().orientation;
 
         final Resources.Theme theme = context.getTheme();
 
@@ -1546,9 +1560,6 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                     break;
 
                 case com.android.internal.R.styleable.TextView_lineBreakWordStyle:
-                    if (a.hasValue(attr)) {
-                        mUserSpeficiedLineBreakwordStyle = true;
-                    }
                     mLineBreakWordStyle = a.getInt(attr,
                             LineBreakConfig.LINE_BREAK_WORD_STYLE_NONE);
                     break;
@@ -1627,6 +1638,13 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         } else {
             mUseFallbackLineSpacing = FALLBACK_LINE_SPACING_NONE;
         }
+
+        if (CompatChanges.isChangeEnabled(USE_BOUNDS_FOR_WIDTH)) {
+            mUseBoundsForWidth = ClientFlags.useBoundsForWidth();
+        } else {
+            mUseBoundsForWidth = false;
+        }
+
         // TODO(b/179693024): Use a ChangeId instead.
         mUseTextPaddingForUiTranslation = targetSdkVersion <= Build.VERSION_CODES.R;
 
@@ -1865,6 +1883,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         boolean clickable = canInputOrMove || isClickable();
         boolean longClickable = canInputOrMove || isLongClickable();
         int focusable = getFocusable();
+        boolean isAutoHandwritingEnabled = true;
 
         n = a.getIndexCount();
         for (int i = 0; i < n; i++) {
@@ -1887,6 +1906,10 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                 case com.android.internal.R.styleable.View_longClickable:
                     longClickable = a.getBoolean(attr, longClickable);
                     break;
+
+                case com.android.internal.R.styleable.View_autoHandwritingEnabled:
+                    isAutoHandwritingEnabled = a.getBoolean(attr, true);
+                    break;
             }
         }
         a.recycle();
@@ -1900,6 +1923,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         }
         setClickable(clickable);
         setLongClickable(longClickable);
+        setAutoHandwritingEnabled(isAutoHandwritingEnabled);
 
         if (mEditor != null) mEditor.prepareCursorControllers();
 
@@ -2445,8 +2469,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         if (!enabled) {
             // Hide the soft input if the currently active TextView is disabled
             InputMethodManager imm = getInputMethodManager();
-            if (imm != null && imm.isActive(this)) {
-                imm.hideSoftInputFromWindow(getWindowToken(), 0);
+            if (imm != null) {
+                imm.hideSoftInputFromView(this, 0);
             }
         }
 
@@ -2795,11 +2819,22 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         if (mEditor != null) {
             mEditor.setTransformationMethod(method);
         } else {
-            setTransformationMethodInternal(method);
+            setTransformationMethodInternal(method, /* updateText */ true);
         }
     }
 
-    void setTransformationMethodInternal(@Nullable TransformationMethod method) {
+    /**
+     * Set the transformation that is applied to the text that this TextView is displaying,
+     * optionally call the setText.
+     * @param method the new transformation method to be set.
+     * @param updateText whether the call {@link #setText} which will update the TextView to display
+     *                   the new content. This method is helpful when updating
+     *                   {@link TransformationMethod} inside {@link #setText}. It should only be
+     *                   false if text will be updated immediately after this call, otherwise the
+     *                   TextView will enter an inconsistent state.
+     */
+    void setTransformationMethodInternal(@Nullable TransformationMethod method,
+            boolean updateText) {
         if (method == mTransformation) {
             // Avoid the setText() below if the transformation is
             // the same.
@@ -2821,7 +2856,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             mAllowTransformationLengthChange = false;
         }
 
-        setText(mText);
+        if (updateText) {
+            setText(mText);
+        }
 
         if (hasPasswordTransformationMethod()) {
             notifyViewAccessibilityStateChangedIfNeeded(
@@ -4337,7 +4374,6 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                     break;
                 case com.android.internal.R.styleable.TextAppearance_lineBreakWordStyle:
                     attributes.mHasLineBreakWordStyle = true;
-                    mUserSpeficiedLineBreakwordStyle = true;
                     attributes.mLineBreakWordStyle =
                             appearance.getInt(attr, attributes.mLineBreakWordStyle);
                     break;
@@ -4560,6 +4596,15 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             mFontWeightAdjustment = newConfig.fontWeightAdjustment;
             setTypeface(getTypeface());
         }
+
+        InputMethodManager imm = getInputMethodManager();
+        // if orientation changed and this TextView is currently served.
+        if (mLastOrientation != newConfig.orientation
+                && imm != null && imm.hasActiveInputConnection(this)) {
+            // EditorInfo.internalImeOptions are out of date.
+            imm.restartInput(this);
+        }
+        mLastOrientation = newConfig.orientation;
     }
 
     /**
@@ -4814,6 +4859,99 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                 invalidate();
             }
         }
+    }
+
+    /**
+     * Set true for using width of bounding box as a source of automatic line breaking and drawing.
+     *
+     * If this value is false, the TextView determines the View width, drawing offset and automatic
+     * line breaking based on total advances as text widths. By setting true, use glyph bound's as a
+     * source of text width.
+     *
+     * If the font used for this TextView has glyphs that has negative bearing X or glyph xMax is
+     * greater than advance, the glyph clipping can be happened because the drawing area may be
+     * bigger than advance. By setting this to true, the TextView will reserve more spaces for
+     * drawing are, so clipping can be prevented.
+     *
+     * This value is true by default if the target API version is 35 or later.
+     *
+     * @param useBoundsForWidth true for using bounding box for width. false for using advances for
+     *                          width.
+     * @see #getUseBoundsForWidth()
+     */
+    @FlaggedApi(FLAG_USE_BOUNDS_FOR_WIDTH)
+    public void setUseBoundsForWidth(boolean useBoundsForWidth) {
+        if (mUseBoundsForWidth != useBoundsForWidth) {
+            mUseBoundsForWidth = useBoundsForWidth;
+            if (mLayout != null) {
+                nullLayouts();
+                requestLayout();
+                invalidate();
+            }
+        }
+    }
+
+    /**
+     * Returns true if using bounding box as a width, false for using advance as a width.
+     *
+     * @see #setUseBoundsForWidth(boolean)
+     * @return True if using bounding box for width, false if using advance for width.
+     */
+    @FlaggedApi(FLAG_USE_BOUNDS_FOR_WIDTH)
+    public boolean getUseBoundsForWidth() {
+        return mUseBoundsForWidth;
+    }
+
+    /**
+     * Set the minimum font metrics used for line spacing.
+     *
+     * <p>
+     * {@code null} is the default value. If {@code null} is set or left as default, the font
+     * metrics obtained by {@link Paint#getFontMetricsForLocale(Paint.FontMetrics)} is used.
+     *
+     * <p>
+     * The minimum meaning here is the minimum value of line spacing: maximum value of
+     * {@link Paint#ascent()}, minimum value of {@link Paint#descent()}.
+     *
+     * <p>
+     * By setting this value, each line will have minimum line spacing regardless of the text
+     * rendered. For example, usually Japanese script has larger vertical metrics than Latin script.
+     * By setting the metrics obtained by {@link Paint#getFontMetricsForLocale(Paint.FontMetrics)}
+     * for Japanese or leave it {@code null} if the TextView's locale or system locale is Japanese,
+     * the line spacing for Japanese is reserved if the TextView contains English text. If the
+     * vertical metrics of the text is larger than Japanese, for example Burmese, the bigger font
+     * metrics is used.
+     *
+     * @param minimumFontMetrics A minimum font metrics. Passing {@code null} for using the value
+     *                           obtained by
+     *                           {@link Paint#getFontMetricsForLocale(Paint.FontMetrics)}
+     * @see #getMinimumFontMetrics()
+     * @see Layout#getMinimumFontMetrics()
+     * @see Layout.Builder#setMinimumFontMetrics(Paint.FontMetrics)
+     * @see StaticLayout.Builder#setMinimumFontMetrics(Paint.FontMetrics)
+     * @see DynamicLayout.Builder#setMinimumFontMetrics(Paint.FontMetrics)
+     */
+    @FlaggedApi(FLAG_FIX_LINE_HEIGHT_FOR_LOCALE)
+    public void setMinimumFontMetrics(@Nullable Paint.FontMetrics minimumFontMetrics) {
+        mMinimumFontMetrics = minimumFontMetrics;
+    }
+
+    /**
+     * Get the minimum font metrics used for line spacing.
+     *
+     * @see #setMinimumFontMetrics(Paint.FontMetrics)
+     * @see Layout#getMinimumFontMetrics()
+     * @see Layout.Builder#setMinimumFontMetrics(Paint.FontMetrics)
+     * @see StaticLayout.Builder#setMinimumFontMetrics(Paint.FontMetrics)
+     * @see DynamicLayout.Builder#setMinimumFontMetrics(Paint.FontMetrics)
+     *
+     * @return a minimum font metrics. {@code null} for using the value obtained by
+     *         {@link Paint#getFontMetricsForLocale(Paint.FontMetrics)}
+     */
+    @Nullable
+    @FlaggedApi(FLAG_FIX_LINE_HEIGHT_FOR_LOCALE)
+    public Paint.FontMetrics getMinimumFontMetrics() {
+        return mMinimumFontMetrics;
     }
 
     /**
@@ -5073,7 +5211,6 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
      * @param lineBreakWordStyle The line-break word style for the text.
      */
     public void setLineBreakWordStyle(@LineBreakConfig.LineBreakWordStyle int lineBreakWordStyle) {
-        mUserSpeficiedLineBreakwordStyle = true;
         if (mLineBreakWordStyle != lineBreakWordStyle) {
             mLineBreakWordStyle = lineBreakWordStyle;
             if (mLayout != null) {
@@ -5109,12 +5246,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
      * @see PrecomputedText
      */
     public @NonNull PrecomputedText.Params getTextMetricsParams() {
-        final boolean autoPhraseBreaking =
-                !mUserSpeficiedLineBreakwordStyle && FeatureFlagUtils.isEnabled(mContext,
-                        FeatureFlagUtils.SETTINGS_AUTO_TEXT_WRAPPING);
         return new PrecomputedText.Params(new TextPaint(mTextPaint),
-                LineBreakConfig.getLineBreakConfig(mLineBreakStyle, mLineBreakWordStyle,
-                        autoPhraseBreaking),
+                LineBreakConfig.getLineBreakConfig(mLineBreakStyle, mLineBreakWordStyle),
                 getTextDirectionHeuristic(),
                 mBreakStrategy, mHyphenationFrequency);
     }
@@ -5132,9 +5265,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         mBreakStrategy = params.getBreakStrategy();
         mHyphenationFrequency = params.getHyphenationFrequency();
         LineBreakConfig lineBreakConfig = params.getLineBreakConfig();
-        mLineBreakStyle = lineBreakConfig.getLineBreakStyle();
-        mLineBreakWordStyle = lineBreakConfig.getLineBreakWordStyle();
-        mUserSpeficiedLineBreakwordStyle = true;
+        mLineBreakStyle = LineBreakConfig.getResolvedLineBreakStyle(lineBreakConfig);
+        mLineBreakWordStyle = LineBreakConfig.getResolvedLineBreakWordStyle(lineBreakConfig);
         if (mLayout != null) {
             nullLayouts();
             requestLayout();
@@ -6941,9 +7073,23 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
      *                                  parameters used to create the PrecomputedText mismatches
      *                                  with this TextView.
      */
-    @android.view.RemotableViewMethod
+    @android.view.RemotableViewMethod(asyncImpl = "setTextAsync")
     public final void setText(CharSequence text) {
         setText(text, mBufferType);
+    }
+
+    /**
+     * RemotableViewMethod's asyncImpl of {@link #setText(CharSequence)}.
+     * This should be called on a background thread, and returns a Runnable which is then must be
+     * called on the main thread to complete the operation and set text.
+     * @param text text to be displayed
+     * @return Runnable that sets text; must be called on the main thread by the caller of this
+     * method to complete the operation
+     * @hide
+     */
+    @NonNull
+    public Runnable setTextAsync(@Nullable CharSequence text) {
+        return () -> setText(text);
     }
 
     /**
@@ -7000,6 +7146,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     @UnsupportedAppUsage
     private void setText(CharSequence text, BufferType type,
                          boolean notifyBefore, int oldlen) {
+        if (mEditor != null) {
+            mEditor.beforeSetText();
+        }
         mTextSetFromXmlOrResourceId = false;
         if (text == null) {
             text = "";
@@ -7061,13 +7210,10 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             if (mTextDir == null) {
                 mTextDir = getTextDirectionHeuristic();
             }
-            final boolean autoPhraseBreaking =
-                    !mUserSpeficiedLineBreakwordStyle && FeatureFlagUtils.isEnabled(mContext,
-                            FeatureFlagUtils.SETTINGS_AUTO_TEXT_WRAPPING);
             final @PrecomputedText.Params.CheckResultUsableResult int checkResult =
                     precomputed.getParams().checkResultUsable(getPaint(), mTextDir, mBreakStrategy,
                             mHyphenationFrequency, LineBreakConfig.getLineBreakConfig(
-                                    mLineBreakStyle, mLineBreakWordStyle, autoPhraseBreaking));
+                                    mLineBreakStyle, mLineBreakWordStyle));
             switch (checkResult) {
                 case PrecomputedText.Params.UNUSABLE:
                     throw new IllegalArgumentException(
@@ -7997,8 +8143,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
             } else if (actionCode == EditorInfo.IME_ACTION_DONE) {
                 InputMethodManager imm = getInputMethodManager();
-                if (imm != null && imm.isActive(this)) {
-                    imm.hideSoftInputFromWindow(getWindowToken(), 0);
+                if (imm != null) {
+                    imm.hideSoftInputFromView(this, 0);
                 }
                 return;
             }
@@ -9223,18 +9369,20 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
     @Override
     public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
-        if (mSpannable != null && mLinksClickable) {
-            final float x = event.getX(pointerIndex);
-            final float y = event.getY(pointerIndex);
-            final int offset = getOffsetForPosition(x, y);
-            final ClickableSpan[] clickables = mSpannable.getSpans(offset, offset,
-                    ClickableSpan.class);
-            if (clickables.length > 0) {
-                return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_HAND);
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            if (mSpannable != null && mLinksClickable) {
+                final float x = event.getX(pointerIndex);
+                final float y = event.getY(pointerIndex);
+                final int offset = getOffsetForPosition(x, y);
+                final ClickableSpan[] clickables = mSpannable.getSpans(offset, offset,
+                        ClickableSpan.class);
+                if (clickables.length > 0) {
+                    return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_HAND);
+                }
             }
-        }
-        if (isTextSelectable() || isTextEditable()) {
-            return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_TEXT);
+            if (isTextSelectable() || isTextEditable()) {
+                return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_TEXT);
+            }
         }
         return super.onResolvePointerIcon(event, pointerIndex);
     }
@@ -9659,8 +9807,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                                 // No target for next focus, but make sure the IME
                                 // if this came from it.
                                 InputMethodManager imm = getInputMethodManager();
-                                if (imm != null && imm.isActive(this)) {
-                                    imm.hideSoftInputFromWindow(getWindowToken(), 0);
+                                if (imm != null) {
+                                    imm.hideSoftInputFromView(this, 0);
                                 }
                             }
                         }
@@ -9760,7 +9908,10 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                 outAttrs.initialCapsMode = ic.getCursorCapsMode(getInputType());
                 outAttrs.setInitialSurroundingText(mText);
                 outAttrs.contentMimeTypes = getReceiveContentMimeTypes();
-
+                if (android.view.inputmethod.Flags.editorinfoHandwritingEnabled()
+                        && isAutoHandwritingEnabled()) {
+                    outAttrs.setStylusHandwritingEnabled(true);
+                }
                 ArrayList<Class<? extends HandwritingGesture>> gestures = new ArrayList<>();
                 gestures.add(SelectGesture.class);
                 gestures.add(SelectRangeGesture.class);
@@ -10586,7 +10737,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
             if (hintBoring == UNKNOWN_BORING) {
                 hintBoring = BoringLayout.isBoring(mHint, mTextPaint, mTextDir,
-                        isFallbackLineSpacingForBoringLayout(), mHintBoring);
+                        isFallbackLineSpacingForBoringLayout(),
+                        mMinimumFontMetrics, mHintBoring);
                 if (hintBoring != null) {
                     mHintBoring = hintBoring;
                 }
@@ -10622,9 +10774,6 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             }
             // TODO: code duplication with makeSingleLayout()
             if (mHintLayout == null) {
-                final boolean autoPhraseBreaking =
-                        !mUserSpeficiedLineBreakwordStyle && FeatureFlagUtils.isEnabled(mContext,
-                                FeatureFlagUtils.SETTINGS_AUTO_TEXT_WRAPPING);
                 StaticLayout.Builder builder = StaticLayout.Builder.obtain(mHint, 0,
                         mHint.length(), mTextPaint, hintWidth)
                         .setAlignment(alignment)
@@ -10637,7 +10786,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                         .setJustificationMode(mJustificationMode)
                         .setMaxLines(mMaxMode == LINES ? mMaximum : Integer.MAX_VALUE)
                         .setLineBreakConfig(LineBreakConfig.getLineBreakConfig(
-                                mLineBreakStyle, mLineBreakWordStyle, autoPhraseBreaking));
+                                mLineBreakStyle, mLineBreakWordStyle))
+                        .setUseBoundsForWidth(mUseBoundsForWidth)
+                        .setMinimumFontMetrics(mMinimumFontMetrics);
                 if (shouldEllipsize) {
                     builder.setEllipsize(mEllipsize)
                             .setEllipsizedWidth(ellipsisWidth);
@@ -10697,13 +10848,17 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                     .setBreakStrategy(mBreakStrategy)
                     .setHyphenationFrequency(mHyphenationFrequency)
                     .setJustificationMode(mJustificationMode)
+                    .setLineBreakConfig(LineBreakConfig.getLineBreakConfig(
+                            mLineBreakStyle, mLineBreakWordStyle))
+                    .setUseBoundsForWidth(mUseBoundsForWidth)
                     .setEllipsize(getKeyListener() == null ? effectiveEllipsize : null)
-                    .setEllipsizedWidth(ellipsisWidth);
+                    .setEllipsizedWidth(ellipsisWidth)
+                    .setMinimumFontMetrics(mMinimumFontMetrics);
             result = builder.build();
         } else {
             if (boring == UNKNOWN_BORING) {
                 boring = BoringLayout.isBoring(mTransformed, mTextPaint, mTextDir,
-                        isFallbackLineSpacingForBoringLayout(), mBoring);
+                        isFallbackLineSpacingForBoringLayout(), mMinimumFontMetrics, mBoring);
                 if (boring != null) {
                     mBoring = boring;
                 }
@@ -10715,11 +10870,24 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                     if (useSaved && mSavedLayout != null) {
                         result = mSavedLayout.replaceOrMake(mTransformed, mTextPaint,
                                 wantWidth, alignment, mSpacingMult, mSpacingAdd,
-                                boring, mIncludePad);
+                                boring, mIncludePad, null, wantWidth,
+                                isFallbackLineSpacingForBoringLayout(),
+                                mUseBoundsForWidth, mMinimumFontMetrics);
                     } else {
-                        result = BoringLayout.make(mTransformed, mTextPaint,
-                                wantWidth, alignment, mSpacingMult, mSpacingAdd,
-                                boring, mIncludePad);
+                        result = new BoringLayout(
+                                mTransformed,
+                                mTextPaint,
+                                wantWidth,
+                                alignment,
+                                mSpacingMult,
+                                mSpacingAdd,
+                                mIncludePad,
+                                isFallbackLineSpacingForBoringLayout(),
+                                wantWidth,
+                                null,
+                                boring,
+                                mUseBoundsForWidth,
+                                mMinimumFontMetrics);
                     }
 
                     if (useSaved) {
@@ -10730,20 +10898,28 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                         result = mSavedLayout.replaceOrMake(mTransformed, mTextPaint,
                                 wantWidth, alignment, mSpacingMult, mSpacingAdd,
                                 boring, mIncludePad, effectiveEllipsize,
-                                ellipsisWidth);
+                                ellipsisWidth, isFallbackLineSpacingForBoringLayout(),
+                                mUseBoundsForWidth, mMinimumFontMetrics);
                     } else {
-                        result = BoringLayout.make(mTransformed, mTextPaint,
-                                wantWidth, alignment, mSpacingMult, mSpacingAdd,
-                                boring, mIncludePad, effectiveEllipsize,
-                                ellipsisWidth);
+                        result = new BoringLayout(
+                                mTransformed,
+                                mTextPaint,
+                                wantWidth,
+                                alignment,
+                                mSpacingMult,
+                                mSpacingAdd,
+                                mIncludePad,
+                                isFallbackLineSpacingForBoringLayout(),
+                                ellipsisWidth,
+                                effectiveEllipsize,
+                                boring,
+                                mUseBoundsForWidth,
+                                mMinimumFontMetrics);
                     }
                 }
             }
         }
         if (result == null) {
-            final boolean autoPhraseBreaking =
-                    !mUserSpeficiedLineBreakwordStyle && FeatureFlagUtils.isEnabled(mContext,
-                            FeatureFlagUtils.SETTINGS_AUTO_TEXT_WRAPPING);
             StaticLayout.Builder builder = StaticLayout.Builder.obtain(mTransformed,
                     0, mTransformed.length(), mTextPaint, wantWidth)
                     .setAlignment(alignment)
@@ -10756,7 +10932,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                     .setJustificationMode(mJustificationMode)
                     .setMaxLines(mMaxMode == LINES ? mMaximum : Integer.MAX_VALUE)
                     .setLineBreakConfig(LineBreakConfig.getLineBreakConfig(
-                            mLineBreakStyle, mLineBreakWordStyle, autoPhraseBreaking));
+                            mLineBreakStyle, mLineBreakWordStyle))
+                    .setUseBoundsForWidth(mUseBoundsForWidth)
+                    .setMinimumFontMetrics(mMinimumFontMetrics);
             if (shouldEllipsize) {
                 builder.setEllipsize(effectiveEllipsize)
                         .setEllipsizedWidth(ellipsisWidth);
@@ -10789,7 +10967,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         return false;
     }
 
-    private static int desired(Layout layout) {
+    private static int desired(Layout layout, boolean useBoundsForWidth) {
         int n = layout.getLineCount();
         CharSequence text = layout.getText();
         float max = 0;
@@ -10805,6 +10983,10 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
         for (int i = 0; i < n; i++) {
             max = Math.max(max, layout.getLineMax(i));
+        }
+
+        if (useBoundsForWidth) {
+            max = Math.max(max, layout.computeDrawingBoundingBox().width());
         }
 
         return (int) Math.ceil(max);
@@ -10875,12 +11057,12 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             width = widthSize;
         } else {
             if (mLayout != null && mEllipsize == null) {
-                des = desired(mLayout);
+                des = desired(mLayout, mUseBoundsForWidth);
             }
 
             if (des < 0) {
                 boring = BoringLayout.isBoring(mTransformed, mTextPaint, mTextDir,
-                        isFallbackLineSpacingForBoringLayout(), mBoring);
+                        isFallbackLineSpacingForBoringLayout(), mMinimumFontMetrics, mBoring);
                 if (boring != null) {
                     mBoring = boring;
                 }
@@ -10891,11 +11073,17 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
             if (boring == null || boring == UNKNOWN_BORING) {
                 if (des < 0) {
                     des = (int) Math.ceil(Layout.getDesiredWidthWithLimit(mTransformed, 0,
-                            mTransformed.length(), mTextPaint, mTextDir, widthLimit));
+                            mTransformed.length(), mTextPaint, mTextDir, widthLimit,
+                            mUseBoundsForWidth));
                 }
                 width = des;
             } else {
-                width = boring.width;
+                if (mUseBoundsForWidth) {
+                    width = Math.max(boring.width,
+                            (int) Math.ceil(boring.getDrawingBoundingBox().width()));
+                } else {
+                    width = boring.width;
+                }
             }
 
             final Drawables dr = mDrawables;
@@ -10909,12 +11097,13 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                 int hintWidth;
 
                 if (mHintLayout != null && mEllipsize == null) {
-                    hintDes = desired(mHintLayout);
+                    hintDes = desired(mHintLayout, mUseBoundsForWidth);
                 }
 
                 if (hintDes < 0) {
                     hintBoring = BoringLayout.isBoring(mHint, mTextPaint, mTextDir,
-                            isFallbackLineSpacingForBoringLayout(), mHintBoring);
+                            isFallbackLineSpacingForBoringLayout(), mMinimumFontMetrics,
+                            mHintBoring);
                     if (hintBoring != null) {
                         mHintBoring = hintBoring;
                     }
@@ -10923,7 +11112,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                 if (hintBoring == null || hintBoring == UNKNOWN_BORING) {
                     if (hintDes < 0) {
                         hintDes = (int) Math.ceil(Layout.getDesiredWidthWithLimit(mHint, 0,
-                                mHint.length(), mTextPaint, mTextDir, widthLimit));
+                                mHint.length(), mTextPaint, mTextDir, widthLimit,
+                                mUseBoundsForWidth));
                     }
                     hintWidth = hintDes;
                 } else {
@@ -11114,9 +11304,6 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
         final StaticLayout.Builder layoutBuilder = StaticLayout.Builder.obtain(
                 text, 0, text.length(),  mTempTextPaint, Math.round(availableSpace.right));
-        final boolean autoPhraseBreaking =
-                !mUserSpeficiedLineBreakwordStyle && FeatureFlagUtils.isEnabled(mContext,
-                        FeatureFlagUtils.SETTINGS_AUTO_TEXT_WRAPPING);
         layoutBuilder.setAlignment(getLayoutAlignment())
                 .setLineSpacing(getLineSpacingExtra(), getLineSpacingMultiplier())
                 .setIncludePad(getIncludeFontPadding())
@@ -11127,7 +11314,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                 .setMaxLines(mMaxMode == LINES ? mMaximum : Integer.MAX_VALUE)
                 .setTextDirection(getTextDirectionHeuristic())
                 .setLineBreakConfig(LineBreakConfig.getLineBreakConfig(
-                        mLineBreakStyle, mLineBreakWordStyle, autoPhraseBreaking));
+                        mLineBreakStyle, mLineBreakWordStyle))
+                .setUseBoundsForWidth(mUseBoundsForWidth)
+                .setMinimumFontMetrics(mMinimumFontMetrics);
 
         final StaticLayout layout = layoutBuilder.build();
 
@@ -12878,6 +13067,15 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     }
 
     /**
+     * @return true if this TextView could be filled by an Autofill service. Note that disabled
+     * fields can still be filled.
+     */
+    @UnsupportedAppUsage
+    boolean isTextAutofillable() {
+        return mText instanceof Editable && onCheckIsTextEditor();
+    }
+
+    /**
      * Returns true, only while processing a touch gesture, if the initial
      * touch down event caused focus to move to the text view and as a result
      * its selection changed.  Only valid while processing the touch gesture
@@ -13196,9 +13394,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         if (mTextOperationUser == null) {
             return super.isStylusHandwritingAvailable();
         }
-        final int userId = mTextOperationUser.getIdentifier();
         final InputMethodManager imm = getInputMethodManager();
-        return imm.isStylusHandwritingAvailableAsUser(userId);
+        return imm.isStylusHandwritingAvailableAsUser(mTextOperationUser);
     }
 
     @Nullable
@@ -13600,7 +13797,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
     @Override
     public void autofill(AutofillValue value) {
-        if (!isTextEditable()) {
+        if (!isTextAutofillable()) {
             Log.w(LOG_TAG, "cannot autofill non-editable TextView: " + this);
             return;
         }
@@ -13616,7 +13813,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
     @Override
     public @AutofillType int getAutofillType() {
-        return isTextEditable() ? AUTOFILL_TYPE_TEXT : AUTOFILL_TYPE_NONE;
+        return isTextAutofillable() ? AUTOFILL_TYPE_TEXT : AUTOFILL_TYPE_NONE;
     }
 
     /**
@@ -13630,7 +13827,7 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     @Override
     @Nullable
     public AutofillValue getAutofillValue() {
-        if (isTextEditable()) {
+        if (isTextAutofillable()) {
             final CharSequence text = TextUtils.trimToParcelableSize(getText());
             return AutofillValue.forText(text);
         }
@@ -13809,13 +14006,14 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     }
 
     /**
-     * Helper method to set {@code rect} to the text content's non-clipped area in the view's
-     * coordinates.
+     * Helper method to set {@code rect} to this TextView's non-clipped area in its own coordinates.
+     * This method obtains the view's visible rectangle whereas the method
+     * {@link #getContentVisibleRect} returns the text layout's visible rectangle.
      *
      * @return true if at least part of the text content is visible; false if the text content is
      * completely clipped or translated out of the visible area.
      */
-    private boolean getContentVisibleRect(Rect rect) {
+    private boolean getViewVisibleRect(Rect rect) {
         if (!getLocalVisibleRect(rect)) {
             return false;
         }
@@ -13824,6 +14022,20 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         // view's coordinates. So we need to offset it with the negative scrolled amount to convert
         // it to view's coordinate.
         rect.offset(-getScrollX(), -getScrollY());
+        return true;
+    }
+
+    /**
+     * Helper method to set {@code rect} to the text content's non-clipped area in the view's
+     * coordinates.
+     *
+     * @return true if at least part of the text content is visible; false if the text content is
+     * completely clipped or translated out of the visible area.
+     */
+    private boolean getContentVisibleRect(Rect rect) {
+        if (!getViewVisibleRect(rect)) {
+            return false;
+        }
         // Clip the view's visible rect with the text layout's visible rect.
         return rect.intersect(getCompoundPaddingLeft(), getCompoundPaddingTop(),
                 getWidth() - getCompoundPaddingRight(), getHeight() - getCompoundPaddingBottom());
@@ -13953,14 +14165,25 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
         builder.setMatrix(viewToScreenMatrix);
 
         if (includeEditorBounds) {
-            final RectF editorBounds = new RectF();
-            editorBounds.set(0 /* left */, 0 /* top */,
-                    getWidth(), getHeight());
-            final RectF handwritingBounds = new RectF(
-                    -getHandwritingBoundsOffsetLeft(),
-                    -getHandwritingBoundsOffsetTop(),
-                    getWidth() + getHandwritingBoundsOffsetRight(),
-                    getHeight() + getHandwritingBoundsOffsetBottom());
+            if (mTempRect == null) {
+                mTempRect = new Rect();
+            }
+            final Rect bounds = mTempRect;
+            final RectF editorBounds;
+            final RectF handwritingBounds;
+            if (getViewVisibleRect(bounds)) {
+                editorBounds = new RectF(bounds);
+                handwritingBounds = new RectF(editorBounds);
+                handwritingBounds.top -= getHandwritingBoundsOffsetTop();
+                handwritingBounds.left -= getHandwritingBoundsOffsetLeft();
+                handwritingBounds.bottom += getHandwritingBoundsOffsetBottom();
+                handwritingBounds.right += getHandwritingBoundsOffsetRight();
+            } else {
+                // The editor is not visible at all, return empty rectangles. We still need to
+                // return an EditorBoundsInfo because IME has subscribed the EditorBoundsInfo.
+                editorBounds = new RectF();
+                handwritingBounds = new RectF();
+            }
             EditorBoundsInfo.Builder boundsBuilder = new EditorBoundsInfo.Builder();
             EditorBoundsInfo editorBoundsInfo = boundsBuilder.setEditorBounds(editorBounds)
                     .setHandwritingBounds(handwritingBounds).build();
@@ -14006,7 +14229,8 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
                             selectionStart, OffsetMapping.MAP_STRATEGY_CURSOR);
                     final int line = layout.getLineForOffset(offsetTransformed);
                     final float insertionMarkerX =
-                            layout.getPrimaryHorizontal(offsetTransformed)
+                            layout.getPrimaryHorizontal(
+                                            offsetTransformed, layout.shouldClampCursor(line))
                                     + viewportToContentHorizontalOffset;
                     final float insertionMarkerTop = layout.getLineTop(line)
                             + viewportToContentVerticalOffset;
@@ -14964,7 +15188,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     }
 
     boolean canShare() {
-        if (!getContext().canStartActivityForResult() || !isDeviceProvisioned()) {
+        if (!getContext().canStartActivityForResult() || !isDeviceProvisioned()
+                || !getContext().getResources().getBoolean(
+                com.android.internal.R.bool.config_textShareSupported)) {
             return false;
         }
         return canCopy();
@@ -14996,6 +15222,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
 
         final ClipDescription description =
                 getClipboardManagerForUser().getPrimaryClipDescription();
+        if (description == null) {
+            return false;
+        }
         final boolean isPlainType = description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN);
         return (isPlainType && description.isStyledText())
                 || description.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML);
@@ -15391,6 +15620,9 @@ public class TextView extends View implements ViewTreeObserver.OnPreDrawListener
     private void ensureIterableTextForAccessibilitySelectable() {
         if (!(mText instanceof Spannable)) {
             setText(mText, BufferType.SPANNABLE);
+            if (getLayout() == null) {
+                assumeLayout();
+            }
         }
     }
 

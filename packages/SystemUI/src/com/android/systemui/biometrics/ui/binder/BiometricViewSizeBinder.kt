@@ -28,9 +28,9 @@ import android.view.accessibility.AccessibilityManager
 import android.widget.TextView
 import androidx.core.animation.addListener
 import androidx.core.view.doOnLayout
+import androidx.core.view.isGone
 import androidx.lifecycle.lifecycleScope
-import com.android.systemui.R
-import com.android.systemui.biometrics.AuthDialog
+import com.android.systemui.res.R
 import com.android.systemui.biometrics.AuthPanelController
 import com.android.systemui.biometrics.Utils
 import com.android.systemui.biometrics.ui.BiometricPromptLayout
@@ -45,6 +45,10 @@ import kotlinx.coroutines.launch
 
 /** Helper for [BiometricViewBinder] to handle resize transitions. */
 object BiometricViewSizeBinder {
+
+    private const val ANIMATE_SMALL_TO_MEDIUM_DURATION_MS = 150
+    // TODO(b/201510778): make private when related misuse is fixed
+    const val ANIMATE_MEDIUM_TO_LARGE_DURATION_MS = 450
 
     /** Resizes [BiometricPromptLayout] and the [panelViewController] via the [PromptViewModel]. */
     fun bind(
@@ -71,16 +75,18 @@ object BiometricViewSizeBinder {
             }
         }
 
-        val iconHolderView = view.findViewById<View>(R.id.biometric_icon_frame)
+        val iconHolderView = view.requireViewById<View>(R.id.biometric_icon_frame)
         val iconPadding = view.resources.getDimension(R.dimen.biometric_dialog_icon_padding)
         val fullSizeYOffset =
             view.resources.getDimension(R.dimen.biometric_dialog_medium_to_large_translation_offset)
 
         // cache the original position of the icon view (as done in legacy view)
         // this must happen before any size changes can be made
-        var iconHolderOriginalY = 0f
         view.doOnLayout {
-            iconHolderOriginalY = iconHolderView.y
+            // TODO(b/251476085): this old way of positioning has proven itself unreliable
+            // remove this and associated thing like (UdfpsDialogMeasureAdapter) and
+            // pin to the physical sensor
+            val iconHolderOriginalY = iconHolderView.y
 
             // bind to prompt
             // TODO(b/251476085): migrate the legacy panel controller and simplify this
@@ -131,7 +137,7 @@ object BiometricViewSizeBinder {
                                     )
                                 }
                                 size.isMedium && currentSize.isSmall -> {
-                                    val duration = AuthDialog.ANIMATE_SMALL_TO_MEDIUM_DURATION_MS
+                                    val duration = ANIMATE_SMALL_TO_MEDIUM_DURATION_MS
                                     panelViewController.updateForContentDimensions(
                                         width,
                                         height,
@@ -141,7 +147,11 @@ object BiometricViewSizeBinder {
                                         listOf(
                                             iconHolderView.asVerticalAnimator(
                                                 duration = duration.toLong(),
-                                                toY = iconHolderOriginalY,
+                                                toY =
+                                                    iconHolderOriginalY -
+                                                        viewsToHideWhenSmall
+                                                            .filter { it.isGone }
+                                                            .sumOf { it.height },
                                             ),
                                             viewsToFadeInOnSizeChange.asFadeInAnimator(
                                                 duration = duration.toLong(),
@@ -158,7 +168,7 @@ object BiometricViewSizeBinder {
                                     )
                                 }
                                 size.isLarge -> {
-                                    val duration = AuthDialog.ANIMATE_MEDIUM_TO_LARGE_DURATION_MS
+                                    val duration = ANIMATE_MEDIUM_TO_LARGE_DURATION_MS
                                     panelViewController.setUseFullScreen(true)
                                     panelViewController.updateForContentDimensions(
                                         panelViewController.containerWidth,
@@ -198,7 +208,7 @@ object BiometricViewSizeBinder {
 }
 
 private fun View.isLandscape(): Boolean {
-    val r = context.display.rotation
+    val r = context.display?.rotation
     return r == Surface.ROTATION_90 || r == Surface.ROTATION_270
 }
 

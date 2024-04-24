@@ -15,7 +15,6 @@
  */
 package com.android.wm.shell.pip.phone;
 
-import static com.android.internal.config.sysui.SystemUiDeviceConfigFlags.PIP_PINCH_RESIZE;
 import static com.android.internal.policy.TaskResizingAlgorithm.CTRL_BOTTOM;
 import static com.android.internal.policy.TaskResizingAlgorithm.CTRL_LEFT;
 import static com.android.internal.policy.TaskResizingAlgorithm.CTRL_NONE;
@@ -31,7 +30,6 @@ import android.graphics.Rect;
 import android.graphics.Region;
 import android.hardware.input.InputManager;
 import android.os.Looper;
-import android.provider.DeviceConfig;
 import android.view.BatchedInputEventReceiver;
 import android.view.Choreographer;
 import android.view.InputChannel;
@@ -46,11 +44,12 @@ import androidx.annotation.VisibleForTesting;
 import com.android.internal.policy.TaskResizingAlgorithm;
 import com.android.wm.shell.R;
 import com.android.wm.shell.common.ShellExecutor;
+import com.android.wm.shell.common.pip.PipBoundsAlgorithm;
+import com.android.wm.shell.common.pip.PipBoundsState;
+import com.android.wm.shell.common.pip.PipPinchResizingAlgorithm;
+import com.android.wm.shell.common.pip.PipUiEventLogger;
 import com.android.wm.shell.pip.PipAnimationController;
-import com.android.wm.shell.pip.PipBoundsAlgorithm;
-import com.android.wm.shell.pip.PipBoundsState;
 import com.android.wm.shell.pip.PipTaskOrganizer;
-import com.android.wm.shell.pip.PipUiEventLogger;
 
 import java.io.PrintWriter;
 import java.util.function.Consumer;
@@ -154,21 +153,8 @@ public class PipResizeGestureHandler {
         mContext.getDisplay().getRealSize(mMaxSize);
         reloadResources();
 
-        mEnablePinchResize = DeviceConfig.getBoolean(
-                DeviceConfig.NAMESPACE_SYSTEMUI,
-                PIP_PINCH_RESIZE,
-                /* defaultValue = */ true);
-        DeviceConfig.addOnPropertiesChangedListener(DeviceConfig.NAMESPACE_SYSTEMUI,
-                mMainExecutor,
-                new DeviceConfig.OnPropertiesChangedListener() {
-                    @Override
-                    public void onPropertiesChanged(DeviceConfig.Properties properties) {
-                        if (properties.getKeyset().contains(PIP_PINCH_RESIZE)) {
-                            mEnablePinchResize = properties.getBoolean(
-                                    PIP_PINCH_RESIZE, /* defaultValue = */ true);
-                        }
-                    }
-                });
+        final Resources res = mContext.getResources();
+        mEnablePinchResize = res.getBoolean(R.bool.config_pipEnablePinchResize);
     }
 
     public void onConfigurationChanged() {
@@ -578,6 +564,12 @@ public class PipResizeGestureHandler {
                     resizeRectAboutCenter(mLastResizeBounds, mMaxSize.x, mMaxSize.y);
                 }
 
+                // If user resize is smaller than min size, auto resize to min
+                if (mLastResizeBounds.width() < mMinSize.x
+                        || mLastResizeBounds.height() < mMinSize.y) {
+                    resizeRectAboutCenter(mLastResizeBounds, mMinSize.x, mMinSize.y);
+                }
+
                 // get the current movement bounds
                 final Rect movementBounds = mPipBoundsAlgorithm
                         .getMovementBounds(mLastResizeBounds);
@@ -678,6 +670,8 @@ public class PipResizeGestureHandler {
         pw.println(innerPrefix + "mEnablePinchResize=" + mEnablePinchResize);
         pw.println(innerPrefix + "mThresholdCrossed=" + mThresholdCrossed);
         pw.println(innerPrefix + "mOhmOffset=" + mOhmOffset);
+        pw.println(innerPrefix + "mMinSize=" + mMinSize);
+        pw.println(innerPrefix + "mMaxSize=" + mMaxSize);
     }
 
     class PipResizeInputEventReceiver extends BatchedInputEventReceiver {

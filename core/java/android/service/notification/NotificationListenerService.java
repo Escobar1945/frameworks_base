@@ -309,6 +309,7 @@ public abstract class NotificationListenerService extends Service {
             REASON_ASSISTANT_CANCEL,
             REASON_LOCKDOWN,
     })
+    @Retention(RetentionPolicy.SOURCE)
     public @interface NotificationCancelReason{};
 
     /**
@@ -320,6 +321,7 @@ public abstract class NotificationListenerService extends Service {
             FLAG_FILTER_TYPE_SILENT,
             FLAG_FILTER_TYPE_ONGOING
     })
+    @Retention(RetentionPolicy.SOURCE)
     public @interface NotificationFilterTypes {}
     /**
      * A flag value indicating that this notification listener can see conversation type
@@ -485,9 +487,6 @@ public abstract class NotificationListenerService extends Service {
     /**
      * Implement this method to learn when notifications are removed.
      * <p>
-     * This might occur because the user has dismissed the notification using system UI (or another
-     * notification listener) or because the app has withdrawn the notification.
-     * <p>
      * NOTE: The {@link StatusBarNotification} object you receive will be "light"; that is, the
      * result from {@link StatusBarNotification#getNotification} may be missing some heavyweight
      * fields such as {@link android.app.Notification#contentView} and
@@ -505,9 +504,6 @@ public abstract class NotificationListenerService extends Service {
 
     /**
      * Implement this method to learn when notifications are removed.
-     * <p>
-     * This might occur because the user has dismissed the notification using system UI (or another
-     * notification listener) or because the app has withdrawn the notification.
      * <p>
      * NOTE: The {@link StatusBarNotification} object you receive will be "light"; that is, the
      * result from {@link StatusBarNotification#getNotification} may be missing some heavyweight
@@ -531,9 +527,6 @@ public abstract class NotificationListenerService extends Service {
     /**
      * Implement this method to learn when notifications are removed and why.
      * <p>
-     * This might occur because the user has dismissed the notification using system UI (or another
-     * notification listener) or because the app has withdrawn the notification.
-     * <p>
      * NOTE: The {@link StatusBarNotification} object you receive will be "light"; that is, the
      * result from {@link StatusBarNotification#getNotification} may be missing some heavyweight
      * fields such as {@link android.app.Notification#contentView} and
@@ -546,10 +539,9 @@ public abstract class NotificationListenerService extends Service {
      *            was just removed.
      * @param rankingMap The current ranking map that can be used to retrieve ranking information
      *                   for active notifications.
-     * @param reason see {@link #REASON_LISTENER_CANCEL}, etc.
      */
     public void onNotificationRemoved(StatusBarNotification sbn, RankingMap rankingMap,
-            int reason) {
+            @NotificationCancelReason int reason) {
         onNotificationRemoved(sbn, rankingMap);
     }
 
@@ -906,8 +898,7 @@ public abstract class NotificationListenerService extends Service {
      * <p>This method will throw a security exception if you don't have access to notifications
      * for the given user.</p>
      * <p>The caller must have {@link CompanionDeviceManager#getAssociations() an associated
-     * device} or be the {@link NotificationAssistantService notification assistant} in order to
-     * use this method.
+     * device} or be the notification assistant in order to use this method.
      *
      * @param pkg The package to retrieve channels for.
      */
@@ -930,8 +921,7 @@ public abstract class NotificationListenerService extends Service {
      * <p>This method will throw a security exception if you don't have access to notifications
      * for the given user.</p>
      * <p>The caller must have {@link CompanionDeviceManager#getAssociations() an associated
-     * device} or be the {@link NotificationAssistantService notification assistant} in order to
-     * use this method.
+     * device} or be the notification assistant in order to use this method.
      *
      * @param pkg The package to retrieve channel groups for.
      */
@@ -2011,15 +2001,28 @@ public abstract class NotificationListenerService extends Service {
 
         /**
          * Returns a list of smart {@link Notification.Action} that can be added by the
-         * {@link NotificationAssistantService}
+         * notification assistant.
          */
         public @NonNull List<Notification.Action> getSmartActions() {
             return mSmartActions == null ? Collections.emptyList() : mSmartActions;
         }
 
+
         /**
-         * Returns a list of smart replies that can be added by the
-         * {@link NotificationAssistantService}
+         * Sets the smart {@link Notification.Action} objects.
+         *
+         * Should ONLY be used in cases where smartActions need to be removed from, then restored
+         * on, Ranking objects during Parceling, when they are transmitted between processes via
+         * Shared Memory.
+         *
+         * @hide
+         */
+        public void setSmartActions(@Nullable ArrayList<Notification.Action> smartActions) {
+            mSmartActions = smartActions;
+        }
+
+        /**
+         * Returns a list of smart replies that can be added by the notification assistant.
          */
         public @NonNull List<CharSequence> getSmartReplies() {
             return mSmartReplies == null ? Collections.emptyList() : mSmartReplies;
@@ -2363,11 +2366,9 @@ public abstract class NotificationListenerService extends Service {
 
         /**
          * Get a reference to the actual Ranking object corresponding to the key.
-         * Used only by unit tests.
          *
          * @hide
          */
-        @VisibleForTesting
         public Ranking getRawRankingObject(String key) {
             return mRankings.get(key);
         }

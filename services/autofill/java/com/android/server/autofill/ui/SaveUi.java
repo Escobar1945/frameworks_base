@@ -21,6 +21,7 @@ import static com.android.server.autofill.Helper.sVerbose;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.ActivityOptions;
 import android.app.Dialog;
 import android.app.PendingIntent;
 import android.content.ComponentName;
@@ -48,7 +49,6 @@ import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ClickableSpan;
 import android.util.ArraySet;
-import android.util.DisplayMetrics;
 import android.util.Pair;
 import android.util.Slog;
 import android.util.SparseArray;
@@ -206,7 +206,10 @@ final class SaveUi {
                         intent,
                         PendingIntent.FLAG_MUTABLE
                                 | PendingIntent.FLAG_ALLOW_UNSAFE_IMPLICIT_INTENT,
-                        /* options= */ null, UserHandle.CURRENT);
+                        ActivityOptions.makeBasic()
+                                .setPendingIntentCreatorBackgroundActivityStartMode(
+                                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                                .toBundle(), UserHandle.CURRENT);
                 if (sDebug) {
                     Slog.d(TAG, "startActivity add save UI restored with intent=" + intent);
                 }
@@ -363,13 +366,6 @@ final class SaveUi {
         window.setCloseOnTouchOutside(true);
         final WindowManager.LayoutParams params = window.getAttributes();
 
-        DisplayMetrics displayMetrics = new DisplayMetrics();
-        window.getWindowManager().getDefaultDisplay().getMetrics(displayMetrics);
-        final int screenWidth = displayMetrics.widthPixels;
-        final int maxWidth =
-                context.getResources().getDimensionPixelSize(R.dimen.autofill_dialog_max_width);
-        params.width = Math.min(screenWidth, maxWidth);
-
         params.accessibilityTitle = context.getString(R.string.autofill_save_accessibility_title);
         params.windowAnimations = R.style.AutofillSaveAnimation;
         params.setTrustedOverlay();
@@ -443,7 +439,8 @@ final class SaveUi {
                     }
                     final BatchUpdates batchUpdates = pair.second;
                     // First apply the updates...
-                    final RemoteViews templateUpdates = batchUpdates.getUpdates();
+                    final RemoteViews templateUpdates =
+                            Helper.sanitizeRemoteView(batchUpdates.getUpdates());
                     if (templateUpdates != null) {
                         if (sDebug) Slog.d(TAG, "Applying template updates for batch update #" + i);
                         templateUpdates.reapply(context, customSubtitleView);

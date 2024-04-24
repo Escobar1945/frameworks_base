@@ -20,6 +20,7 @@ import android.os.Handler
 import android.os.Looper
 import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.MotionEvent.ACTION_DOWN
 import android.view.MotionEvent.ACTION_MOVE
@@ -36,6 +37,8 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mock
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.verify
@@ -67,10 +70,10 @@ class BackPanelControllerTest : SysuiTestCase() {
                 context,
                 windowManager,
                 ViewConfiguration.get(context),
-                Handler.createAsync(Looper.myLooper()),
+                Handler.createAsync(checkNotNull(Looper.myLooper())),
                 vibratorHelper,
                 configurationController,
-                latencyTracker
+                latencyTracker,
             )
         mBackPanelController.setLayoutParams(layoutParams)
         mBackPanelController.setBackCallback(backCallback)
@@ -113,8 +116,8 @@ class BackPanelControllerTest : SysuiTestCase() {
         verify(backCallback).setTriggerBack(true)
         testableLooper.moveTimeForward(100)
         testableLooper.processAllMessages()
-        verify(vibratorHelper).vibrate(VIBRATE_ACTIVATED_EFFECT)
-
+        verify(vibratorHelper)
+            .performHapticFeedback(any(), eq(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE))
         finishTouchActionUp(START_X + touchSlop + triggerThreshold + 1)
         assertThat(mBackPanelController.currentState)
             .isEqualTo(BackPanelController.GestureState.COMMITTED)
@@ -145,7 +148,8 @@ class BackPanelControllerTest : SysuiTestCase() {
         assertThat(mBackPanelController.currentState)
             .isEqualTo(BackPanelController.GestureState.INACTIVE)
         verify(backCallback).setTriggerBack(false)
-        verify(vibratorHelper).vibrate(VIBRATE_DEACTIVATED_EFFECT)
+        verify(vibratorHelper)
+            .performHapticFeedback(any(), eq(HapticFeedbackConstants.GESTURE_THRESHOLD_DEACTIVATE))
 
         finishTouchActionUp(START_X)
         verify(backCallback).cancelBack()

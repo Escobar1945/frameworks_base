@@ -748,7 +748,11 @@ public final class NotificationEntry extends ListEntry {
         return row != null && row.getGuts() != null && row.getGuts().isExposed();
     }
 
-    public boolean isChildInGroup() {
+    /**
+     * @return Whether the notification row is a child of a group notification view; false if the
+     * row is null
+     */
+    public boolean rowIsChildInGroup() {
         return row != null && row.isChildInGroup();
     }
 
@@ -789,28 +793,6 @@ public final class NotificationEntry extends ListEntry {
         }
         // don't dismiss ongoing Notifications when the device is locked
         return !mSbn.isOngoing() || !isLocked;
-    }
-
-    /**
-     * @return Can the underlying notification be individually dismissed?
-     * @see #canViewBeDismissed()
-     */
-    // TODO: This logic doesn't belong on NotificationEntry. It should be moved to a controller
-    // that can be added as a dependency to any class that needs to answer this question.
-    public boolean legacyIsDismissableRecursive() {
-        if  (mSbn.isOngoing()) {
-            return false;
-        }
-        List<NotificationEntry> children = getAttachedNotifChildren();
-        if (children != null && children.size() > 0) {
-            for (int i = 0; i < children.size(); i++) {
-                NotificationEntry child =  children.get(i);
-                if (child.getSbn().isOngoing()) {
-                    return false;
-                }
-            }
-        }
-        return true;
     }
 
     public boolean canViewBeDismissed() {
@@ -999,6 +981,19 @@ public final class NotificationEntry extends ListEntry {
     /** Whether this notification is currently used to animate a launch. */
     public boolean isExpandAnimationRunning() {
         return mExpandAnimationRunning;
+    }
+
+    /**
+     * @return NotificationStyle
+     */
+    public String getNotificationStyle() {
+        if (isSummaryWithChildren()) {
+            return "summary";
+        }
+
+        final Class<? extends Notification.Style> style =
+                getSbn().getNotification().getNotificationStyle();
+        return style == null ? "nostyle" : style.getSimpleName();
     }
 
     /** Information about a suggestion that is being edited. */

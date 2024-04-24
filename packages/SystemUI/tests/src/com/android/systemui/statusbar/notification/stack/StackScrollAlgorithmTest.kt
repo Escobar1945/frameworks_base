@@ -1,19 +1,20 @@
 package com.android.systemui.statusbar.notification.stack
 
 import android.annotation.DimenRes
+import android.content.pm.PackageManager
 import android.widget.FrameLayout
 import androidx.test.filters.SmallTest
 import com.android.keyguard.BouncerPanelExpansionCalculator.aboutToShowBouncerProgress
-import com.android.systemui.R
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.animation.ShadeInterpolation.getContentAlpha
 import com.android.systemui.dump.DumpManager
-import com.android.systemui.flags.FeatureFlags
-import com.android.systemui.flags.Flags
+import com.android.systemui.res.R
 import com.android.systemui.shade.transition.LargeScreenShadeInterpolator
 import com.android.systemui.statusbar.EmptyShadeView
 import com.android.systemui.statusbar.NotificationShelf
 import com.android.systemui.statusbar.StatusBarState
+import com.android.systemui.statusbar.notification.footer.ui.view.FooterView
+import com.android.systemui.statusbar.notification.footer.ui.view.FooterView.FooterViewState
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow
 import com.android.systemui.statusbar.notification.row.ExpandableView
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager
@@ -23,6 +24,7 @@ import com.google.common.truth.Truth.assertThat
 import junit.framework.Assert.assertEquals
 import junit.framework.Assert.assertFalse
 import junit.framework.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -46,10 +48,10 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
     private val dumpManager = mock<DumpManager>()
     private val mStatusBarKeyguardViewManager = mock<StatusBarKeyguardViewManager>()
     private val notificationShelf = mock<NotificationShelf>()
-    private val featureFlags = mock<FeatureFlags>()
     private val emptyShadeView = EmptyShadeView(context, /* attrs= */ null).apply {
         layout(/* l= */ 0, /* t= */ 0, /* r= */ 100, /* b= */ 100)
     }
+    private val footerView = FooterView(context, /*attrs=*/null)
     private val ambientState = AmbientState(
             context,
             dumpManager,
@@ -57,10 +59,13 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
             /* bypassController */ { false },
             mStatusBarKeyguardViewManager,
             largeScreenShadeInterpolator,
-            featureFlags,
         )
 
     private val testableResources = mContext.getOrCreateTestableResources()
+    private val maxPanelHeight =
+        mContext.resources.displayMetrics.heightPixels -
+                px(R.dimen.notification_panel_margin_top) -
+                px(R.dimen.notification_panel_margin_bottom)
 
     private fun px(@DimenRes id: Int): Float =
             testableResources.resources.getDimensionPixelSize(id).toFloat()
@@ -70,11 +75,17 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
 
     @Before
     fun setUp() {
+        Assume.assumeFalse(isTv())
+
         whenever(notificationShelf.viewState).thenReturn(ExpandableViewState())
         whenever(notificationRow.viewState).thenReturn(ExpandableViewState())
         ambientState.isSmallScreen = true
 
         hostView.addView(notificationRow)
+    }
+
+    private fun isTv(): Boolean {
+        return context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
 
     @Test
@@ -140,7 +151,7 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
         stackScrollAlgorithm.initView(context)
         hostView.removeAllViews()
         hostView.addView(emptyShadeView)
-        ambientState.layoutMaxHeight = 1280
+        ambientState.layoutMaxHeight = maxPanelHeight.toInt()
 
         stackScrollAlgorithm.resetViewStates(ambientState, /* speedBumpIndex= */ 0)
 
@@ -148,7 +159,7 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
                 context.resources.getDimensionPixelSize(R.dimen.notification_panel_margin_bottom)
         val fullHeight = ambientState.layoutMaxHeight + marginBottom - ambientState.stackY
         val centeredY = ambientState.stackY + fullHeight / 2f - emptyShadeView.height / 2f
-        assertThat(emptyShadeView.viewState?.yTranslation).isEqualTo(centeredY)
+        assertThat(emptyShadeView.viewState.yTranslation).isEqualTo(centeredY)
     }
 
     @Test
@@ -191,12 +202,10 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
     }
 
     @Test
-    fun resetViewStates_flagTrue_largeScreen_expansionChanging_alphaUpdated_largeScreenValue() {
+    fun resetViewStates_largeScreen_expansionChanging_alphaUpdated_largeScreenValue() {
         val expansionFraction = 0.6f
         val surfaceAlpha = 123f
         ambientState.isSmallScreen = false
-        whenever(featureFlags.isEnabled(Flags.LARGE_SHADE_GRANULAR_ALPHA_INTERPOLATION))
-                .thenReturn(true)
         whenever(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit).thenReturn(false)
         whenever(largeScreenShadeInterpolator.getNotificationContentAlpha(expansionFraction))
             .thenReturn(surfaceAlpha)
@@ -204,23 +213,6 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
         resetViewStates_expansionChanging_notificationAlphaUpdated(
             expansionFraction = expansionFraction,
             expectedAlpha = surfaceAlpha,
-        )
-    }
-
-    @Test
-    fun resetViewStates_flagFalse_largeScreen_expansionChanging_alphaUpdated_standardValue() {
-        val expansionFraction = 0.6f
-        val surfaceAlpha = 123f
-        ambientState.isSmallScreen = false
-        whenever(featureFlags.isEnabled(Flags.LARGE_SHADE_GRANULAR_ALPHA_INTERPOLATION))
-                .thenReturn(false)
-        whenever(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit).thenReturn(false)
-        whenever(largeScreenShadeInterpolator.getNotificationContentAlpha(expansionFraction))
-            .thenReturn(surfaceAlpha)
-
-        resetViewStates_expansionChanging_notificationAlphaUpdated(
-            expansionFraction = expansionFraction,
-            expectedAlpha = getContentAlpha(expansionFraction),
         )
     }
 
@@ -253,6 +245,8 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
     fun resetViewStates_isOnKeyguard_viewBecomesTransparent() {
         ambientState.setStatusBarState(StatusBarState.KEYGUARD)
         ambientState.hideAmount = 0.25f
+        whenever(notificationRow.isHeadsUpState).thenReturn(true)
+
         stackScrollAlgorithm.initView(context)
 
         stackScrollAlgorithm.resetViewStates(ambientState, /* speedBumpIndex= */ 0)
@@ -295,17 +289,20 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
         val row2 = mockExpandableNotificationRow()
         hostView.addView(row2)
 
+        whenever(row1.isHeadsUpState).thenReturn(true)
+        whenever(row2.isHeadsUpState).thenReturn(false)
+
         ambientState.setStatusBarState(StatusBarState.KEYGUARD)
         ambientState.hideAmount = 0.25f
+        ambientState.dozeAmount = 0.33f
         notificationShelf.viewState.hidden = true
         ambientState.shelf = notificationShelf
         stackScrollAlgorithm.initView(context)
 
         stackScrollAlgorithm.resetViewStates(ambientState, /* speedBumpIndex= */ 0)
 
-        val expected = 1f - ambientState.hideAmount
-        assertThat(row1.viewState.alpha).isEqualTo(expected)
-        assertThat(row2.viewState.alpha).isEqualTo(expected)
+        assertThat(row1.viewState.alpha).isEqualTo(1f - ambientState.hideAmount)
+        assertThat(row2.viewState.alpha).isEqualTo(1f - ambientState.dozeAmount)
     }
 
     @Test
@@ -345,6 +342,57 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
         stackScrollAlgorithm.resetViewStates(ambientState, /* speedBumpIndex= */ 0)
 
         assertThat(notificationRow.viewState.alpha).isEqualTo(expected)
+    }
+
+    @Test
+    fun resetViewStates_noSpaceForFooter_footerHidden() {
+        ambientState.isShadeExpanded = true
+        ambientState.stackEndHeight = 0f // no space for the footer in the stack
+        hostView.addView(footerView)
+
+        stackScrollAlgorithm.resetViewStates(ambientState, 0)
+
+        assertThat((footerView.viewState as FooterViewState).hideContent).isTrue()
+    }
+
+    @Test
+    fun resetViewStates_clearAllInProgress_hasNonClearableRow_footerVisible() {
+        whenever(notificationRow.canViewBeCleared()).thenReturn(false)
+        ambientState.isClearAllInProgress = true
+        ambientState.isShadeExpanded = true
+        ambientState.stackEndHeight = maxPanelHeight // plenty space for the footer in the stack
+        hostView.addView(footerView)
+
+        stackScrollAlgorithm.resetViewStates(ambientState, 0)
+
+        assertThat(footerView.viewState.hidden).isFalse()
+        assertThat((footerView.viewState as FooterViewState).hideContent).isFalse()
+    }
+
+    @Test
+    fun resetViewStates_clearAllInProgress_allRowsClearable_footerHidden() {
+        whenever(notificationRow.canViewBeCleared()).thenReturn(true)
+        ambientState.isClearAllInProgress = true
+        ambientState.isShadeExpanded = true
+        ambientState.stackEndHeight = maxPanelHeight // plenty space for the footer in the stack
+        hostView.addView(footerView)
+
+        stackScrollAlgorithm.resetViewStates(ambientState, 0)
+
+        assertThat((footerView.viewState as FooterViewState).hideContent).isTrue()
+    }
+
+    @Test
+    fun resetViewStates_clearAllInProgress_allRowsRemoved_emptyShade_footerHidden() {
+        ambientState.isClearAllInProgress = true
+        ambientState.isShadeExpanded = true
+        ambientState.stackEndHeight = maxPanelHeight // plenty space for the footer in the stack
+        hostView.removeAllViews() // remove all rows
+        hostView.addView(footerView)
+
+        stackScrollAlgorithm.resetViewStates(ambientState, 0)
+
+        assertThat((footerView.viewState as FooterViewState).hideContent).isTrue()
     }
 
     @Test
@@ -835,6 +883,74 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
         )
     }
 
+    // region shouldPinHunToBottomOfExpandedQs
+    @Test
+    fun shouldHunBeVisibleWhenScrolled_mustStayOnScreenFalse_false() {
+        assertThat(stackScrollAlgorithm.shouldHunBeVisibleWhenScrolled(
+            /* mustStayOnScreen= */false,
+            /* headsUpIsVisible= */false,
+            /* showingPulsing= */false,
+            /* isOnKeyguard=*/false,
+            /*headsUpOnKeyguard=*/false
+        )).isFalse()
+    }
+
+    @Test
+    fun shouldPinHunToBottomOfExpandedQs_headsUpIsVisible_false() {
+        assertThat(stackScrollAlgorithm.shouldHunBeVisibleWhenScrolled(
+            /* mustStayOnScreen= */true,
+            /* headsUpIsVisible= */true,
+            /* showingPulsing= */false,
+            /* isOnKeyguard=*/false,
+            /*headsUpOnKeyguard=*/false
+        )).isFalse()
+    }
+
+    @Test
+    fun shouldHunBeVisibleWhenScrolled_showingPulsing_false() {
+        assertThat(stackScrollAlgorithm.shouldHunBeVisibleWhenScrolled(
+            /* mustStayOnScreen= */true,
+            /* headsUpIsVisible= */false,
+            /* showingPulsing= */true,
+            /* isOnKeyguard=*/false,
+            /* headsUpOnKeyguard= */false
+        )).isFalse()
+    }
+
+    @Test
+    fun shouldHunBeVisibleWhenScrolled_isOnKeyguard_false() {
+        assertThat(stackScrollAlgorithm.shouldHunBeVisibleWhenScrolled(
+            /* mustStayOnScreen= */true,
+            /* headsUpIsVisible= */false,
+            /* showingPulsing= */false,
+            /* isOnKeyguard=*/true,
+            /* headsUpOnKeyguard= */false
+        )).isFalse()
+    }
+
+    @Test
+    fun shouldHunBeVisibleWhenScrolled_isNotOnKeyguard_true() {
+        assertThat(stackScrollAlgorithm.shouldHunBeVisibleWhenScrolled(
+            /* mustStayOnScreen= */true,
+            /* headsUpIsVisible= */false,
+            /* showingPulsing= */false,
+            /* isOnKeyguard=*/false,
+            /* headsUpOnKeyguard= */false
+        )).isTrue()
+    }
+
+    @Test
+    fun shouldHunBeVisibleWhenScrolled_headsUpOnKeyguard_true() {
+        assertThat(stackScrollAlgorithm.shouldHunBeVisibleWhenScrolled(
+            /* mustStayOnScreen= */true,
+            /* headsUpIsVisible= */false,
+            /* showingPulsing= */false,
+            /* isOnKeyguard=*/true,
+            /* headsUpOnKeyguard= */true
+        )).isTrue()
+    }
+    // endregion
+
     private fun createHunViewMock(
             isShadeOpen: Boolean,
             fullyVisible: Boolean,
@@ -894,7 +1010,7 @@ class StackScrollAlgorithmTest : SysuiTestCase() {
     }
 
     private fun resetViewStates_stackMargin_changesHunYTranslation() {
-        val stackTopMargin = 50
+        val stackTopMargin = bigGap.toInt() // a gap smaller than the headsUpInset
         val headsUpTranslationY = stackScrollAlgorithm.mHeadsUpInset - stackTopMargin
 
         // we need the shelf to mock the real-life behaviour of StackScrollAlgorithm#updateChild

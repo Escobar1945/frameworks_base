@@ -30,6 +30,7 @@ import android.graphics.Color;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Trace;
 import android.os.UserHandle;
 import android.text.Editable;
 import android.text.SpannedString;
@@ -80,7 +81,7 @@ import com.android.internal.logging.UiEvent;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.util.ContrastColorUtil;
 import com.android.systemui.Dependency;
-import com.android.systemui.R;
+import com.android.systemui.res.R;
 import com.android.systemui.statusbar.RemoteInputController;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.row.wrapper.NotificationViewWrapper;
@@ -129,7 +130,7 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
     private ImageView mDelete;
     private ImageView mDeleteBg;
     private boolean mColorized;
-    private int mTint;
+    private int mLastBackgroundColor;
     private boolean mResetting;
     @Nullable
     private RevealParams mRevealParams;
@@ -180,10 +181,9 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
         mEditorActionHandler = new EditorActionHandler();
         mUiEventLogger = Dependency.get(UiEventLogger.class);
         TypedArray ta = getContext().getTheme().obtainStyledAttributes(new int[]{
-                com.android.internal.R.attr.colorAccent,
-                com.android.internal.R.attr.colorSurface,
+                com.android.internal.R.attr.materialColorSurfaceDim,
         });
-        mTint = ta.getColor(0, 0);
+        mLastBackgroundColor = ta.getColor(0, 0);
         ta.recycle();
     }
 
@@ -209,9 +209,9 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
      * @param backgroundColor colorized notification color
      */
     public void setBackgroundTintColor(final int backgroundColor, boolean colorized) {
-        if (colorized == mColorized && backgroundColor == mTint) return;
+        if (colorized == mColorized && backgroundColor == mLastBackgroundColor) return;
         mColorized = colorized;
-        mTint = backgroundColor;
+        mLastBackgroundColor = backgroundColor;
         final int editBgColor;
         final int deleteBgColor;
         final int deleteFgColor;
@@ -236,8 +236,8 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
             hintColor = mContext.getColor(R.color.remote_input_hint);
             deleteFgColor = textColor.getDefaultColor();
             try (TypedArray ta = getContext().getTheme().obtainStyledAttributes(new int[]{
-                    com.android.internal.R.attr.colorSurfaceHighlight,
-                    com.android.internal.R.attr.colorSurfaceVariant
+                    com.android.internal.R.attr.materialColorSurfaceDim,
+                    com.android.internal.R.attr.materialColorSurfaceVariant
             })) {
                 editBgColor = ta.getColor(0, backgroundColor);
                 deleteBgColor = ta.getColor(1, Color.GRAY);
@@ -304,7 +304,8 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
                             && editTextRootWindowInsets.isVisible(WindowInsets.Type.ime());
                     if (!mEntry.mRemoteEditImeVisible && !mEditText.mShowImeOnInputConnection) {
                         // Pass null to ensure all inputs are cleared for this entry b/227115380
-                        mController.removeRemoteInput(mEntry, null);
+                            mController.removeRemoteInput(mEntry, null,
+                                    /* reason= */"RemoteInputView$WindowInsetAnimation#onEnd");
                     }
                 }
             }
@@ -425,7 +426,7 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
 
     @VisibleForTesting
     void onDefocus(boolean animate, boolean logClose, @Nullable Runnable doAfterDefocus) {
-        mController.removeRemoteInput(mEntry, mToken);
+        mController.removeRemoteInput(mEntry, mToken, /* reason= */"RemoteInputView#onDefocus");
         mEntry.remoteInputText = mEditText.getText();
 
         // During removal, we get reattached and lose focus. Not hiding in that
@@ -535,7 +536,8 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
         if (mEntry.getRow().isChangingPosition() || isTemporarilyDetached()) {
             return;
         }
-        mController.removeRemoteInput(mEntry, mToken);
+        mController.removeRemoteInput(mEntry, mToken,
+                /* reason= */"RemoteInputView#onDetachedFromWindow");
         mController.removeSpinning(mEntry.getKey(), mToken);
     }
 
@@ -654,7 +656,7 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
         mEditText.setText(mEntry.remoteInputText);
         mEditText.setSelection(mEditText.length());
         mEditText.requestFocus();
-        mController.addRemoteInput(mEntry, mToken);
+        mController.addRemoteInput(mEntry, mToken, "RemoteInputView#focus");
         setAttachment(mEntry.remoteInputAttachment);
 
         updateSendButton();
@@ -1032,10 +1034,12 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
         }
 
         private void hideIme() {
+            Trace.beginSection("RemoteEditText#hideIme");
             final WindowInsetsController insetsController = getWindowInsetsController();
             if (insetsController != null) {
                 insetsController.hide(WindowInsets.Type.ime());
             }
+            Trace.endSection();
         }
 
         private void defocusIfNeeded(boolean animate) {

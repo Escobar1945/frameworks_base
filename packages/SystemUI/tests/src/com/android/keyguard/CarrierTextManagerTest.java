@@ -55,7 +55,7 @@ import android.testing.AndroidTestingRunner;
 import android.text.TextUtils;
 
 import com.android.keyguard.logging.CarrierTextManagerLogger;
-import com.android.systemui.R;
+import com.android.systemui.res.R;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.dump.LogBufferHelperKt;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
@@ -419,7 +419,15 @@ public class CarrierTextManagerTest extends SysuiTestCase {
 
         assertFalse(mWifiRepository.isWifiConnectedWithValidSsid());
         mWifiRepository.setWifiNetwork(
-                new WifiNetworkModel.Active(0, false, 0, "", false, false, null));
+                new WifiNetworkModel.Active(
+                        /* networkId= */ 0,
+                        /* isValidated= */ false,
+                        /* level= */ 0,
+                        /* ssid= */ "",
+                        /* hotspotDeviceType= */ WifiNetworkModel.HotspotDeviceType.NONE,
+                        /* isPasspointAccessPoint= */ false,
+                        /* isOnlineSignUpForPasspointAccessPoint= */ false,
+                        /* passpointProviderFriendlyName= */ null));
         assertTrue(mWifiRepository.isWifiConnectedWithValidSsid());
 
         mKeyguardUpdateMonitor.mServiceStates = new HashMap<>();

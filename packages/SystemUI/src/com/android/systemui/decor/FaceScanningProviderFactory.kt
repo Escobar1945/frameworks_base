@@ -94,7 +94,7 @@ class FaceScanningProviderFactory @Inject constructor(
         }
 
     fun canShowFaceScanningAnim(): Boolean {
-        return hasProviders && keyguardUpdateMonitor.isFaceEnrolled
+        return hasProviders && keyguardUpdateMonitor.isFaceEnabledAndEnrolled
     }
 
     fun shouldShowFaceScanningAnim(): Boolean {
@@ -111,7 +111,7 @@ class FaceScanningOverlayProviderImpl(
     private val mainExecutor: Executor,
     private val logger: ScreenDecorationsLogger,
 ) : BoundDecorProvider() {
-    override val viewId: Int = com.android.systemui.R.id.face_scanning_anim
+    override val viewId: Int = com.android.systemui.res.R.id.face_scanning_anim
 
     override fun onReloadResAndMeasure(
         view: View,

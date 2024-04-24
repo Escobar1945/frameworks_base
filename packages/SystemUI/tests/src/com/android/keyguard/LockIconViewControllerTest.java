@@ -21,9 +21,11 @@ import static android.hardware.biometrics.BiometricAuthenticator.TYPE_FINGERPRIN
 import static com.android.keyguard.LockIconView.ICON_LOCK;
 import static com.android.keyguard.LockIconView.ICON_UNLOCK;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,12 +35,15 @@ import android.hardware.biometrics.BiometricSourceType;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.util.Pair;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 
 import androidx.test.filters.SmallTest;
 
-import com.android.settingslib.udfps.UdfpsOverlayParams;
+import com.android.systemui.biometrics.UdfpsController;
+import com.android.systemui.biometrics.shared.model.UdfpsOverlayParams;
 import com.android.systemui.doze.util.BurnInHelperKt;
+import com.android.systemui.statusbar.StatusBarState;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -47,6 +52,12 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidTestingRunner.class)
 @TestableLooper.RunWithLooper
 public class LockIconViewControllerTest extends LockIconViewControllerBaseTest {
+
+    @Override
+    public void setUp() throws Exception {
+        super.setUp();
+        when(mLockIconView.isAttachedToWindow()).thenReturn(true);
+    }
 
     @Test
     public void testUpdateFingerprintLocationOnInit() {
@@ -172,13 +183,14 @@ public class LockIconViewControllerTest extends LockIconViewControllerBaseTest {
     }
 
     @Test
-    public void testLockIcon_clearsIconOnAod_whenUdfpsNotEnrolled() {
+    public void testLockIcon_clearsIconWhenUnlocked() {
         // GIVEN udfps not enrolled
         setupUdfps();
         when(mKeyguardUpdateMonitor.isUdfpsEnrolled()).thenReturn(false);
 
         // GIVEN starting state for the lock icon
         setupShowLockIcon();
+        when(mStatusBarStateController.getState()).thenReturn(StatusBarState.SHADE);
 
         // GIVEN lock icon controller is initialized and view is attached
         init(/* useMigrationFlag= */false);
@@ -186,7 +198,7 @@ public class LockIconViewControllerTest extends LockIconViewControllerBaseTest {
         reset(mLockIconView);
 
         // WHEN the dozing state changes
-        mStatusBarStateListener.onDozingChanged(true /* isDozing */);
+        mStatusBarStateListener.onDozingChanged(false /* isDozing */);
 
         // THEN the icon is cleared
         verify(mLockIconView).clearIcon();
@@ -338,5 +350,65 @@ public class LockIconViewControllerTest extends LockIconViewControllerBaseTest {
 
         // THEN the lock icon is shown
         verify(mLockIconView).setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    }
+
+    @Test
+    public void playHaptic_onTouchExploration_performHapticFeedback() {
+       // WHEN request to vibrate on touch exploration
+        mUnderTest.vibrateOnTouchExploration();
+
+        // THEN performHapticFeedback is used
+        verify(mVibrator).performHapticFeedback(any(), eq(HapticFeedbackConstants.CONTEXT_CLICK));
+    }
+
+    @Test
+    public void playHaptic_onLongPress_performHapticFeedback() {
+        // WHEN request to vibrate on long press
+        mUnderTest.vibrateOnLongPress();
+
+        // THEN uses perform haptic feedback
+        verify(mVibrator).performHapticFeedback(any(), eq(UdfpsController.LONG_PRESS));
+    }
+
+    @Test
+    public void longPress_showBouncer_sceneContainerNotEnabled() {
+        init(/* useMigrationFlag= */ false);
+        mSceneTestUtils.getSceneContainerFlags().setEnabled(false);
+        when(mFalsingManager.isFalseLongTap(anyInt())).thenReturn(false);
+
+        // WHEN longPress
+        mUnderTest.onLongPress();
+
+        // THEN show primary bouncer via keyguard view controller, not scene container
+        verify(mKeyguardViewController).showPrimaryBouncer(anyBoolean());
+        verify(mDeviceEntryInteractor, never()).attemptDeviceEntry();
+    }
+
+    @Test
+    public void longPress_showBouncer() {
+        init(/* useMigrationFlag= */ false);
+        mSceneTestUtils.getSceneContainerFlags().setEnabled(true);
+        when(mFalsingManager.isFalseLongTap(anyInt())).thenReturn(false);
+
+        // WHEN longPress
+        mUnderTest.onLongPress();
+
+        // THEN show primary bouncer
+        verify(mKeyguardViewController, never()).showPrimaryBouncer(anyBoolean());
+        verify(mDeviceEntryInteractor).attemptDeviceEntry();
+    }
+
+    @Test
+    public void longPress_falsingTriggered_doesNotShowBouncer() {
+        init(/* useMigrationFlag= */ false);
+        mSceneTestUtils.getSceneContainerFlags().setEnabled(true);
+        when(mFalsingManager.isFalseLongTap(anyInt())).thenReturn(true);
+
+        // WHEN longPress
+        mUnderTest.onLongPress();
+
+        // THEN don't show primary bouncer
+        verify(mDeviceEntryInteractor, never()).attemptDeviceEntry();
+        verify(mKeyguardViewController, never()).showPrimaryBouncer(anyBoolean());
     }
 }

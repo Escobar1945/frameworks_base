@@ -20,8 +20,10 @@ import android.hardware.soundtrigger.SoundTrigger;
 import android.service.voice.HotwordDetectedResult;
 import android.service.voice.HotwordDetectionServiceFailure;
 import android.service.voice.HotwordRejectedResult;
+import android.service.voice.HotwordTrainingData;
 import android.service.voice.SoundTriggerFailure;
 import android.service.voice.VisualQueryDetectionServiceFailure;
+import com.android.internal.infra.AndroidFuture;
 
 /**
  * @hide
@@ -56,6 +58,12 @@ oneway interface IHotwordRecognitionStatusCallback {
      *         {@link HotwordDetectionService}.
      */
     void onRejected(in HotwordRejectedResult result);
+
+    /**
+     * Called by {@link HotwordDetectionService} to egress training data to the
+     * {@link HotwordDetector}.
+     */
+    void onTrainingData(in HotwordTrainingData data);
 
     /**
      * Called when the detection fails due to an error occurs in the
@@ -113,4 +121,9 @@ oneway interface IHotwordRecognitionStatusCallback {
 
     /** Called when the hotword detection process is restarted */
     void onProcessRestarted();
+
+    /**
+     * Called when a file open request is sent.
+     */
+   void onOpenFile(in String filename, in AndroidFuture future);
 }

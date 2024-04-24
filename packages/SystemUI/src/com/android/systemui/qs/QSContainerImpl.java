@@ -23,12 +23,14 @@ import android.graphics.Canvas;
 import android.graphics.Path;
 import android.graphics.PointF;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
 import com.android.systemui.Dumpable;
-import com.android.systemui.R;
 import com.android.systemui.qs.customize.QSCustomizer;
+import com.android.systemui.res.R;
+import com.android.systemui.shade.TouchLogger;
 import com.android.systemui.util.LargeScreenUtils;
 
 import java.io.PrintWriter;
@@ -57,6 +59,8 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
     private boolean mClippingEnabled;
     private boolean mIsFullWidth;
 
+    private boolean mSceneContainerEnabled;
+
     public QSContainerImpl(Context context, AttributeSet attrs) {
         super(context, attrs);
     }
@@ -68,6 +72,10 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
         mHeader = findViewById(R.id.header);
         mQSCustomizer = findViewById(R.id.qs_customize);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+    }
+
+    void setSceneContainerEnabled(boolean enabled) {
+        mSceneContainerEnabled = enabled;
     }
 
     @Override
@@ -129,6 +137,11 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        return TouchLogger.logDispatchTouch("QS", ev, super.dispatchTouchEvent(ev));
+    }
+
+    @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
         updateExpansion();
@@ -154,7 +167,7 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
         }
         mQSPanelContainer.setPaddingRelative(
                 mQSPanelContainer.getPaddingStart(),
-                topPadding,
+                mSceneContainerEnabled ? 0 : topPadding,
                 mQSPanelContainer.getPaddingEnd(),
                 mQSPanelContainer.getPaddingBottom());
 
@@ -228,11 +241,15 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
                 quickStatusBarHeaderController.setContentMargins(mContentHorizontalPadding,
                         mContentHorizontalPadding);
             } else {
-                view.setPaddingRelative(
-                        mContentHorizontalPadding,
-                        view.getPaddingTop(),
-                        mContentHorizontalPadding,
-                        view.getPaddingBottom());
+                // Set the horizontal paddings unless the view is the Compose implementation of the
+                // footer actions.
+                if (view.getTag(R.id.tag_compose_qs_footer_actions) == null) {
+                    view.setPaddingRelative(
+                            mContentHorizontalPadding,
+                            view.getPaddingTop(),
+                            mContentHorizontalPadding,
+                            view.getPaddingBottom());
+                }
             }
         }
     }

@@ -25,7 +25,7 @@ import com.android.internal.logging.UiEventLogger
 import com.android.internal.statusbar.IUndoMediaTransferCallback
 import com.android.systemui.CoreStartable
 import com.android.systemui.Dumpable
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.systemui.common.shared.model.Text
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dump.DumpManager
@@ -162,7 +162,7 @@ constructor(
         logger: MediaTttSenderLogger,
         instanceId: InstanceId,
     ): ChipbarInfo {
-        val packageName = routeInfo.clientPackageName
+        val packageName = checkNotNull(routeInfo.clientPackageName)
         val otherDeviceName =
             if (routeInfo.name.isBlank()) {
                 context.getString(R.string.media_ttt_default_device_type)

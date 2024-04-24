@@ -97,9 +97,10 @@ import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
 import com.android.settingslib.Utils;
 import com.android.settingslib.drawable.CircleFramedDrawable;
 import com.android.systemui.Gefingerpoken;
-import com.android.systemui.R;
 import com.android.systemui.classifier.FalsingA11yDelegate;
 import com.android.systemui.plugins.FalsingManager;
+import com.android.systemui.res.R;
+import com.android.systemui.shade.TouchLogger;
 import com.android.systemui.shared.system.SysUiStatsLog;
 import com.android.systemui.statusbar.policy.BaseUserSwitcherAdapter;
 import com.android.systemui.statusbar.policy.UserSwitcherController;
@@ -281,6 +282,8 @@ public class KeyguardSecurityContainer extends ConstraintLayout {
 
     public interface SwipeListener {
         void onSwipeUp();
+        /** */
+        void onSwipeDown();
     }
 
     @VisibleForTesting
@@ -543,6 +546,11 @@ public class KeyguardSecurityContainer extends ConstraintLayout {
                 if (mSwipeListener != null) {
                     mSwipeListener.onSwipeUp();
                 }
+            } else if (getTranslationY() > TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP,
+                    MIN_DRAG_SIZE, getResources().getDisplayMetrics())) {
+                if (mSwipeListener != null) {
+                    mSwipeListener.onSwipeDown();
+                }
             }
         }
         return true;
@@ -656,6 +664,11 @@ public class KeyguardSecurityContainer extends ConstraintLayout {
             setPadding(getPaddingLeft(), getPaddingTop(), getPaddingRight(), paddingBottom);
         }
         return insets.inset(0, 0, 0, inset);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        return TouchLogger.logDispatchTouch(TAG, ev, super.dispatchTouchEvent(ev));
     }
 
     @Override
@@ -1160,7 +1173,8 @@ public class KeyguardSecurityContainer extends ConstraintLayout {
                     }
                     drawable.setTint(iconColor);
 
-                    Drawable bg = context.getDrawable(R.drawable.user_avatar_bg);
+                    Drawable bg = context.getDrawable(
+                            com.android.settingslib.R.drawable.user_avatar_bg);
                     bg.setTintBlendMode(BlendMode.DST);
                     bg.setTint(Utils.getColorAttrDefaultColor(context,
                                 com.android.internal.R.attr.colorSurfaceVariant));
@@ -1177,6 +1191,7 @@ public class KeyguardSecurityContainer extends ConstraintLayout {
                 mPopup.setOnItemClickListener((parent, view, pos, id) -> {
                     if (mFalsingManager.isFalseTap(LOW_PENALTY)) return;
                     if (!view.isEnabled()) return;
+                    if (mPopup == null) return;
                     // Subtract one for the header
                     UserRecord user = adapter.getItem(pos - 1);
                     if (user.isManageUsers || user.isAddSupervisedUser) {
